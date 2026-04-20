@@ -1,37 +1,38 @@
 #include "mpc/solver.hpp"
-#include <vector>
+
+#include <cassert>
 #include <iostream>
+#include <stdexcept>
 
 namespace mpc
 {
 
-// Convert Eigen sparse → OSQP CSC
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Convert an Eigen sparse matrix (already column-major / CSC) to a heap-
+/// allocated OSQPCscMatrix.  The caller owns the returned pointer and must
+/// free it with OSQPCscMatrix_free().
 static OSQPCscMatrix* eigenToCSC(const Eigen::SparseMatrix<double>& mat)
 {
     Eigen::SparseMatrix<double> A = mat;
     A.makeCompressed();
 
-    OSQPInt nnz = (OSQPInt)A.nonZeros();
-    OSQPInt n = (OSQPInt)A.cols();
-    OSQPInt m = (OSQPInt)A.rows();
+    const OSQPInt nnz = (OSQPInt)A.nonZeros();
+    const OSQPInt n = (OSQPInt)A.cols();
+    const OSQPInt m = (OSQPInt)A.rows();
 
-    // Allocate new arrays
     OSQPFloat* values = (OSQPFloat*)malloc(sizeof(OSQPFloat) * nnz);
     OSQPInt* rowind = (OSQPInt*)malloc(sizeof(OSQPInt) * nnz);
     OSQPInt* colptr = (OSQPInt*)malloc(sizeof(OSQPInt) * (n + 1));
 
-    // Copy values
     for (OSQPInt i = 0; i < nnz; ++i)
     {
         values[i] = (OSQPFloat)A.valuePtr()[i];
     }
-
-    // Convert indices (int → OSQPInt)
     for (OSQPInt i = 0; i < nnz; ++i)
     {
         rowind[i] = (OSQPInt)A.innerIndexPtr()[i];
     }
-
     for (OSQPInt i = 0; i < n + 1; ++i)
     {
         colptr[i] = (OSQPInt)A.outerIndexPtr()[i];
@@ -40,7 +41,9 @@ static OSQPCscMatrix* eigenToCSC(const Eigen::SparseMatrix<double>& mat)
     return OSQPCscMatrix_new(m, n, nnz, values, rowind, colptr);
 }
 
-Solver::Solver() : solver_(nullptr), n_(0), m_(0) {}
+// ── Constructor / destructor ──────────────────────────────────────────────────
+
+Solver::Solver() = default;
 
 Solver::~Solver()
 {
@@ -50,8 +53,73 @@ Solver::~Solver()
     }
 }
 
-void Solver::setup(const QP& qp, int N)
+// ── Public API ────────────────────────────────────────────────────────────────
+
+bool Solver::update(const QP& qp, int N)
 {
+    const int new_n = qp.P.rows();
+    const int new_m = qp.A.rows();
+
+    // Full re-setup if dimensions changed or first call.
+    if (!initialized_ || new_n != n_ || new_m != m_ || N != N_)
+    {
+        fullSetup(qp, N);
+    }
+    else
+    {
+        incrementalUpdate(qp);
+    }
+
+    // ── Apply warm start from shifted previous solution ───────────────
+    if (!z_warm_.empty())
+    {
+        // osqp_warm_start accepts (solver, x, y); y = nullptr → dual unchanged
+        osqp_warm_start(solver_, z_warm_.data(), nullptr);
+    }
+
+    // ── Solve ─────────────────────────────────────────────────────────
+    osqp_solve(solver_);
+
+    if (solver_->info->status_val != OSQP_SOLVED)
+    {
+        std::cerr << "[Solver] OSQP status: " << solver_->info->status
+                  << " — applying fallback\n";
+        return false;
+    }
+
+    // ── Store solution and prepare warm start for next iteration ─────
+    const double* x = solver_->solution->x;
+    solution_.assign(x, x + n_);
+
+    shiftAndStoreWarmStart();
+    return true;
+}
+
+Control Solver::getControl() const
+{
+    if (solution_.empty())
+    {
+        throw std::runtime_error(
+            "Solver::getControl() called before a successful solve");
+    }
+
+    // Controls start after (N_+1)*NX states.
+    // NX = 3, as defined in qp_builder.hpp
+    const int offset = 3 * (N_ + 1);
+    return {solution_[offset + 0], solution_[offset + 1]};
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+void Solver::fullSetup(const QP& qp, int N)
+{
+    if (solver_)
+    {
+        osqp_cleanup(solver_);
+        solver_ = nullptr;
+        initialized_ = false;
+    }
+
     n_ = qp.P.rows();
     m_ = qp.A.rows();
     N_ = N;
@@ -59,64 +127,176 @@ void Solver::setup(const QP& qp, int N)
     OSQPCscMatrix* P = eigenToCSC(qp.P);
     OSQPCscMatrix* A = eigenToCSC(qp.A);
 
-    std::vector<OSQPFloat> q(qp.q.size());
-    std::vector<OSQPFloat> l(qp.l.size());
-    std::vector<OSQPFloat> u(qp.u.size());
+    // Fill vector buffers
+    q_buf_.resize(qp.q.size());
+    l_buf_.resize(qp.l.size());
+    u_buf_.resize(qp.u.size());
+    for (int i = 0; i < (int)qp.q.size(); ++i)
+    {
+        q_buf_[i] = (OSQPFloat)qp.q[i];
+    }
+    for (int i = 0; i < (int)qp.l.size(); ++i)
+    {
+        l_buf_[i] = (OSQPFloat)qp.l[i];
+    }
+    for (int i = 0; i < (int)qp.u.size(); ++i)
+    {
+        u_buf_[i] = (OSQPFloat)qp.u[i];
+    }
 
-    for (int i = 0; i < qp.q.size(); ++i)
-    {
-        q[i] = qp.q[i];
-    }
-    for (int i = 0; i < qp.l.size(); ++i)
-    {
-        l[i] = qp.l[i];
-    }
-    for (int i = 0; i < qp.u.size(); ++i)
-    {
-        u[i] = qp.u[i];
-    }
+    // Pre-allocate Ax buffer (same nnz every iteration once pattern is fixed)
+    Eigen::SparseMatrix<double> Ac = qp.A;
+    Ac.makeCompressed();
+    Ax_buf_.resize(Ac.nonZeros());
 
     OSQPSettings* settings = (OSQPSettings*)malloc(sizeof(OSQPSettings));
     osqp_set_default_settings(settings);
-
     settings->verbose = false;
     settings->warm_starting = 1;
+    settings->eps_abs = 1e-4;
+    settings->eps_rel = 1e-4;
+    settings->max_iter = 4000;
+    settings->polishing = false;  // fast real-time operation
 
-    std::cout << "P nnz: " << qp.P.nonZeros() << std::endl;
-    std::cout << "A nnz: " << qp.A.nonZeros() << std::endl;
+    const int ret = osqp_setup(
+        &solver_,
+        P,
+        q_buf_.data(),
+        A,
+        l_buf_.data(),
+        u_buf_.data(),
+        (OSQPInt)m_,
+        (OSQPInt)n_,
+        settings);
 
-    osqp_setup(&solver_, P, q.data(), A, l.data(), u.data(), m_, n_, settings);
-}
+    OSQPCscMatrix_free(P);
+    OSQPCscMatrix_free(A);
+    free(settings);
 
-Control Solver::solve()
-{
-    osqp_solve(solver_);
-
-    Control u{0.0, 0.0};
-
-    // if (solver_->info->status_val != OSQP_SOLVED)
-    // {
-    //     std::cerr << "OSQP failed: " << solver_->info->status << std::endl;
-    //     return u;
-    // }
-
-    // for (int i = 0; i < 10; ++i) {
-    //     std::cout << solver_->solution->x[i] << std::endl;
-    // }
-
-    if (!solver_ || !solver_->solution || !solver_->solution->x)
+    if (ret != 0)
     {
-        return u;
+        throw std::runtime_error("osqp_setup() failed");
     }
 
-    auto* x = solver_->solution->x;
+    z_warm_.clear();  // no warm start for first solve after setup
+    solution_.clear();
+    initialized_ = true;
+}
 
-    int offset = 3 * (N_ + 1);
+void Solver::incrementalUpdate(const QP& qp)
+{
+    // ── Update linear cost q ──────────────────────────────────────────
+    for (int i = 0; i < (int)qp.q.size(); ++i)
+    {
+        q_buf_[i] = (OSQPFloat)qp.q[i];
+    }
 
-    u.v = x[offset + 0];
-    u.omega = x[offset + 1];
+    // ── Update bounds l, u ────────────────────────────────────────────
+    for (int i = 0; i < (int)qp.l.size(); ++i)
+    {
+        l_buf_[i] = (OSQPFloat)qp.l[i];
+    }
+    for (int i = 0; i < (int)qp.u.size(); ++i)
+    {
+        u_buf_[i] = (OSQPFloat)qp.u[i];
+    }
 
-    return u;
+    // osqp_update_data_vec(solver, q, q_n, l, l_n, u, u_n)
+    // Pass nullptr / 0 for any component you don't want to update.
+    osqp_update_data_vec(
+        solver_,
+        q_buf_.data(),
+        // (OSQPInt)q_buf_.size(),
+        l_buf_.data(),
+        // (OSQPInt)l_buf_.size(),
+        u_buf_.data()//,
+        // (OSQPInt)u_buf_.size());
+    );
+
+    // ── Update A (LTV dynamics + corridor normals change each step) ───
+    // P is constant (weight matrices don't change), so we skip it.
+    // IMPORTANT: this assumes the sparsity structure of A is identical to
+    // the one used in fullSetup().  QPBuilder guarantees this by always
+    // emitting all entries of A_k and B_k regardless of zero values.
+    Eigen::SparseMatrix<double> Ac = qp.A;
+    Ac.makeCompressed();
+    assert(
+        (int)Ac.nonZeros() == (int)Ax_buf_.size() &&
+        "A sparsity pattern changed — call fullSetup() instead");
+
+    for (int i = 0; i < (int)Ax_buf_.size(); ++i)
+    {
+        Ax_buf_[i] = (OSQPFloat)Ac.valuePtr()[i];
+    }
+
+    // osqp_update_data_mat(solver, Px, Px_idx, P_n, Ax, Ax_idx, A_n)
+    // Passing nullptr for index arrays → update ALL nonzeros in order.
+    osqp_update_data_mat(
+        solver_,
+        nullptr,
+        nullptr,
+        0,  // P unchanged
+        Ax_buf_.data(),
+        nullptr,
+        (OSQPInt)Ax_buf_.size());
+}
+
+void Solver::shiftAndStoreWarmStart()
+{
+    // Copy solution into the warm-start buffer, then shift forward by one
+    // timestep so it is a reasonable initial guess for the next QP.
+    //
+    // Decision vector layout (mirrored from qp_builder.hpp):
+    //   z = [ x_0 … x_N   (NX=3 per step, N+1 blocks)
+    //         u_0 … u_{N-1}  (NU=2 per step, N blocks)
+    //         ε_0 … ε_{N-1}  (1  per step, N blocks)  ]
+
+    constexpr int NX = 3;
+    constexpr int NU = 2;
+
+    if ((int)solution_.size() != n_)
+    {
+        return;
+    }
+
+    z_warm_.resize(n_);
+    for (int i = 0; i < n_; ++i)
+    {
+        z_warm_[i] = (OSQPFloat)solution_[i];
+    }
+
+    // ── Shift state blocks: x_k ← x_{k+1}, repeat x_N ───────────────
+    for (int k = 0; k < N_; ++k)
+    {
+        const int dst = NX * k;
+        const int src = NX * (k + 1);
+        for (int i = 0; i < NX; ++i)
+        {
+            z_warm_[dst + i] = z_warm_[src + i];
+        }
+    }
+    // x_N already in place (nothing to do)
+
+    // ── Shift control blocks: u_k ← u_{k+1}, repeat u_{N-1} ─────────
+    const int ctrl_base = NX * (N_ + 1);
+    for (int k = 0; k < N_ - 1; ++k)
+    {
+        const int dst = ctrl_base + NU * k;
+        const int src = ctrl_base + NU * (k + 1);
+        for (int i = 0; i < NU; ++i)
+        {
+            z_warm_[dst + i] = z_warm_[src + i];
+        }
+    }
+    // u_{N-1} unchanged (repeat)
+
+    // ── Shift slack blocks: ε_k ← ε_{k+1}, repeat ε_{N-1} ───────────
+    const int slack_base = ctrl_base + NU * N_;
+    for (int k = 0; k < N_ - 1; ++k)
+    {
+        z_warm_[slack_base + k] = z_warm_[slack_base + k + 1];
+    }
+    // ε_{N-1} unchanged (repeat)
 }
 
 }  // namespace mpc

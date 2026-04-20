@@ -18,6 +18,8 @@ class Linearizer
 public:
     double dt;
 
+    explicit Linearizer(double dt) : dt(dt) {}
+
     LinModel linearize(
         const std::vector<State>& traj,
         const std::vector<Control>& u);

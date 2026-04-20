@@ -2,99 +2,98 @@
 #include <vector>
 #include <cmath>
 
-#include "mpc/qp_builder.hpp"
-#include "mpc/solver.hpp"
+#include "mpc/mpc_controller.hpp"
 #include "mpc/types.hpp"
+#include "mpc/path.hpp"
 
 using namespace mpc;
 
-static constexpr double DT = 0.05;
-static constexpr int N = 10;
-
-// simple forward simulation (nonlinear)
-State step(const State& x, const Control& u)
+// ── Plant model (nonlinear, ground truth) ─────────────────────────────────────
+State plantStep(const State& x, const Control& u, double dt)
 {
-    State xn;
-
-    xn.x = x.x + u.v * std::cos(x.theta) * DT;
-    xn.y = x.y + u.v * std::sin(x.theta) * DT;
-    xn.theta = x.theta + u.omega * DT;
-
-    return xn;
+    return {
+        x.x + u.v * std::cos(x.theta) * dt,
+        x.y + u.v * std::sin(x.theta) * dt,
+        x.theta + u.omega * dt};
 }
 
-// simple straight-line reference
-Reference buildReference(const State& x)
+// ── Straight-line path along the x-axis ──────────────────────────────────────
+Path makeStraightPath(double x_start, double x_end, double y = 0.0)
 {
-    Reference ref;
-    ref.x_ref.resize(N + 1);
-
-    for (int k = 0; k <= N; ++k)
+    Path p;
+    for (int i = 0; i <= 20; ++i)
     {
-        ref.x_ref[k].x = x.x + 0.1 * k;
-        ref.x_ref[k].y = 0.0;
-        ref.x_ref[k].theta = 0.0;
+        const double t = (double)i / 20.0;
+        PathPoint pt;
+        pt.pos = Eigen::Vector2d(x_start + t * (x_end - x_start), y);
+        p.pts.push_back(pt);
     }
-
-    return ref;
-}
-
-// trivial linearization (identity-ish for now)
-LinModel buildModel(const State& x)
-{
-    LinModel model;
-    model.A.resize(N);
-    model.B.resize(N);
-
-    for (int k = 0; k < N; ++k)
-    {
-        Eigen::Matrix3d A = Eigen::Matrix3d::Identity();
-        Eigen::Matrix<double, 3, 2> B = Eigen::Matrix<double, 3, 2>::Zero();
-
-        double theta = x.theta;
-
-        B(0, 0) = std::cos(theta) * DT;
-        B(1, 0) = std::sin(theta) * DT;
-        B(2, 1) = DT;
-
-        model.A[k] = A;
-        model.B[k] = B;
-    }
-
-    return model;
+    return p;
 }
 
 int main()
 {
-    QPBuilder builder;
-    Solver solver;
+    // ── Parameters ────────────────────────────────────────────────────
+    MPCParams p;
+    p.N = 12;
+    p.dt = 0.05;
+    p.v_ref = 0.3;
+    p.v_max = 0.5;
+    p.v_min = 0.0;
+    p.omega_max = 1.2;
+    p.a_max = 0.4;
+    p.alpha_max = 2.0;
+    p.d_hard = 0.10;
+    p.w_slack = 1500.0;
+    p.Q_xy = 20.0;
+    p.Q_theta = 2.0;
+    p.Q_xy_terminal = 60.0;
+    p.Q_theta_terminal = 6.0;
+    p.R_rate_v = 2.0;
+    p.R_rate_omega = 2.0;
+    p.blend_alpha = 0.7;
+    p.goal_threshold = 0.3;
 
+    MPCController ctrl(p);
+
+    // ── Initial robot state — starts laterally off the path ───────────
     State x;
     x.x = 0.0;
-    x.y = 0.0;
-    x.theta = 0.0;
+    x.y = 0.25;     // 25 cm lateral offset
+    x.theta = 0.1;  // slight heading error
 
-    for (int t = 0; t < 200; ++t)
+    Path path = makeStraightPath(0.0, 10.0, 0.0);
+
+    std::cout << "t, x, y, theta, v, omega, cte\n";
+
+    for (int t = 0; t < 300; ++t)
     {
-        // build inputs
-        Reference ref = buildReference(x);
-        LinModel model = buildModel(x);
+        // At t = 150 simulate a path update (lateral offset of 0.5 m)
+        // to test reference blending and projection reset.
+        if (t == 150)
+        {
+            path = makeStraightPath(5.0, 15.0, 0.3);
+            std::cout << "# --- path updated at t=150 ---\n";
+        }
 
-        // build QP
-        QP qp = builder.build(x, ref, model);
+        const Control u = ctrl.update(x, path);
 
-        // solve
-        solver.setup(qp, N);
-        Control u = solver.solve();
+        // Cross-track error for logging (re-computed naively here)
+        const Eigen::Vector2d pos(x.x, x.y);
+        double best_d = 1e9;
+        for (size_t i = 0; i < path.size() - 1; ++i)
+        {
+            const auto A = path.pts[i].pos;
+            const auto AB = path.pts[i + 1].pos - A;
+            const double t_seg =
+                std::clamp((pos - A).dot(AB) / AB.squaredNorm(), 0.0, 1.0);
+            best_d = std::min(best_d, (pos - (A + t_seg * AB)).norm());
+        }
 
-        // simulate
-        x = step(x, u);
+        x = plantStep(x, u, p.dt);
 
-        // print
-        std::cout << u.v << ", " << u.omega << std::endl;
-        std::cout << "t=" << t << " | x=" << x.x << " y=" << x.y
-                  << " th=" << x.theta << " | v=" << u.v << " w=" << u.omega
-                  << std::endl;
+        std::cout << t << ", " << x.x << ", " << x.y << ", " << x.theta << ", "
+                  << u.v << ", " << u.omega << ", " << best_d << "\n";
     }
 
     return 0;
