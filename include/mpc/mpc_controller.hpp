@@ -9,8 +9,47 @@
 #include "qp_builder.hpp"
 #include "solver.hpp"
 
+#include <Eigen/Dense>
+#include <vector>
+
 namespace mpc
 {
+
+// ── Debug / visualisation snapshot ───────────────────────────────────────────
+
+/// Everything a visualizer needs from one MPC cycle.
+/// Populated unconditionally by MPCController::update(); read via debugInfo().
+struct DebugInfo
+{
+    /// MPC-predicted state trajectory x_0 … x_N (from OSQP solution).
+    /// Empty if the solver failed.
+    std::vector<State> pred_traj;
+
+    /// Blended reference trajectory x_0 … x_N used to build the QP.
+    std::vector<State> ref_traj;
+
+    /// Unit normals of the assigned corridor segment for each horizon step.
+    std::vector<Eigen::Vector2d> seg_normals;
+
+    /// Closest point on the path for each horizon step (corridor centre).
+    std::vector<Eigen::Vector2d> proj_pts;
+
+    /// Effective corridor half-width [m] used this cycle (may be widened
+    /// during recovery relative to params.d_hard).
+    double d_hard_eff = 0.0;
+
+    /// Raw (un-deadbanded) signed cross-track error [m] at the measured state.
+    /// Positive = left of path.
+    double cte_raw = 0.0;
+
+    /// Closest point on path to the (latency-compensated) robot position.
+    Eigen::Vector2d proj_pt = Eigen::Vector2d::Zero();
+
+    /// true if OSQP reported OSQP_SOLVED this cycle.
+    bool solver_ok = false;
+};
+
+// ── Controller ────────────────────────────────────────────────────────────────
 
 /// MPCController — single entry point for all MPC logic.
 ///
@@ -49,6 +88,9 @@ public:
     /// previous control).  Call after large teleportations or emergency stops.
     void reset();
 
+    /// Read-only access to the debug snapshot from the most recent update().
+    const DebugInfo& debugInfo() const { return debug_info_; }
+
 private:
     // ── Sub-components ────────────────────────────────────────────────
     MPCParams params_;
@@ -62,6 +104,9 @@ private:
     Control u_prev_{0.0, 0.0};
     Reference ref_prev_;
     bool has_prev_ref_{false};
+
+    // ── Debug snapshot (updated every cycle) ──────────────────────────
+    DebugInfo debug_info_;
 
     // ── Helpers ───────────────────────────────────────────────────────
 

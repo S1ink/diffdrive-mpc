@@ -46,6 +46,11 @@ public:
     /// Undefined if the last update() returned false.
     Control getControl() const;
 
+    /// Return the full predicted state trajectory x_0 … x_N extracted from
+    /// the most recent solution vector.  Returns an empty vector if no
+    /// successful solve has occurred yet.
+    std::vector<State> getStatePrediction() const;
+
 private:
     OSQPSolver* solver_ = nullptr;
 
@@ -63,7 +68,7 @@ private:
     std::vector<OSQPFloat> u_buf_;
     std::vector<OSQPFloat> Ax_buf_;  // nonzero values of A
 
-    // Most recent solution (used by getControl)
+    // Most recent solution (used by getControl / getStatePrediction)
     std::vector<double> solution_;
 
     // ── Private helpers ───────────────────────────────────────────────

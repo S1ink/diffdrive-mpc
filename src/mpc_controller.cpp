@@ -24,6 +24,7 @@ void MPCController::reset()
     projector_.reset();
     u_prev_ = {0.0, 0.0};
     has_prev_ref_ = false;
+    debug_info_ = DebugInfo{};
 }
 
 // ── Main control cycle ────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
 {
     if (!path.valid())
     {
+        debug_info_ = DebugInfo{};
         return {0.0, 0.0};
     }
 
@@ -63,7 +65,8 @@ Control MPCController::update(const State& x_measured, const Path& path)
     const ProjectionResult proj = projector_.project(x_pred, path);
 
     // ── D1+D3. Cross-track error with deadband ─────────────────────────
-    double cte = crossTrackError(x_pred, proj, path);
+    const double cte_raw = crossTrackError(x_pred, proj, path);
+    double cte = cte_raw;
     if (std::abs(cte) < params_.d_deadband)
     {
         cte = 0.0;
@@ -135,6 +138,18 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── Build and solve QP ────────────────────────────────────────────
     const QP qp = qp_builder_.build(x_pred, u_prev_, ref, model, ctx);
     const bool ok = solver_.update(qp, N);
+
+    // ── Populate debug snapshot ────────────────────────────────────────
+    debug_info_.solver_ok = ok;
+    debug_info_.cte_raw = cte_raw;
+    debug_info_.d_hard_eff = d_hard_eff;
+    debug_info_.proj_pt = proj.proj;
+    debug_info_.ref_traj = ref.x_ref;
+    debug_info_.seg_normals = ref.seg_normals;
+    debug_info_.proj_pts = ref.proj_pts;
+    // Prediction is only valid after a successful solve.
+    debug_info_.pred_traj =
+        ok ? solver_.getStatePrediction() : std::vector<State>{};
 
     // ── G. Failure fallback ────────────────────────────────────────────
     if (!ok)

@@ -109,6 +109,25 @@ Control Solver::getControl() const
     return {solution_[offset + 0], solution_[offset + 1]};
 }
 
+std::vector<State> Solver::getStatePrediction() const
+{
+    if (solution_.empty() || N_ == 0)
+    {
+        return {};
+    }
+
+    // State blocks occupy the first (N_+1)*NX elements of the decision vector.
+    // Layout: z = [ x_0 x_1 ... x_N  u_0 ... u_{N-1}  ε_0 ... ε_{N-1} ]
+    constexpr int NX = 3;
+    std::vector<State> pred(N_ + 1);
+    for (int k = 0; k <= N_; ++k)
+    {
+        const int base = NX * k;
+        pred[k] = {solution_[base], solution_[base + 1], solution_[base + 2]};
+    }
+    return pred;
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 void Solver::fullSetup(const QP& qp, int N)
@@ -209,7 +228,7 @@ void Solver::incrementalUpdate(const QP& qp)
         // (OSQPInt)q_buf_.size(),
         l_buf_.data(),
         // (OSQPInt)l_buf_.size(),
-        u_buf_.data()//,
+        u_buf_.data()  //,
         // (OSQPInt)u_buf_.size());
     );
 
