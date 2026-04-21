@@ -27,10 +27,10 @@ class Projector
 {
 public:
     /// Only advance to the next segment when t exceeds this threshold.
-    double seg_advance_t = 0.7;
+    double seg_advance_t = 0.7; // REMOVE
 
     /// How many segments ahead of last_segment_ to search.
-    size_t look_ahead = 5;
+    size_t look_ahead = 5;  // REMOVE
 
     /// Reset to the beginning of the path (call when the path changes
     /// drastically or the robot is re-localised far from the current position).

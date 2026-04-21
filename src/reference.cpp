@@ -73,6 +73,8 @@ Reference ReferenceGenerator::generate(
     size_t idx = proj.segment_index;
     double t = proj.t;
     Eigen::Vector2d pos = proj.proj;
+    Eigen::Vector2d expected_robot_pos(proj.proj.x(), proj.proj.y());
+    size_t expected_robot_idx = proj.segment_index;
 
     for (int k = 0; k <= N; ++k)
     {
@@ -100,9 +102,32 @@ Reference ReferenceGenerator::generate(
         const double v_k =
             std::min({params_.v_max, params_.v_ref, v_curvature, v_stop});
 
+        // ── Bisector Update for Corridor Assignment ───────────────────
+        while (expected_robot_idx < path.size() - 2)
+        {
+            const Eigen::Vector2d A = path.pts[expected_robot_idx].pos;
+            const Eigen::Vector2d B = path.pts[expected_robot_idx + 1].pos;
+            const Eigen::Vector2d C = path.pts[expected_robot_idx + 2].pos;
+
+            Eigen::Vector2d d1 = (B - A).normalized();
+            Eigen::Vector2d d2 = (C - B).normalized();
+            Eigen::Vector2d n_bisect = d1 + d2;
+            if (n_bisect.squaredNorm() < 1e-6) n_bisect = d1;
+
+            if ((expected_robot_pos - B).dot(n_bisect) > 0.0) {
+                expected_robot_idx++;
+            } else {
+                break;
+            }
+        }
+
+        // Assign the normal based on the EXPECTED physical segment, not the reference segment
+        const Eigen::Vector2d active_dir = path.segmentDir(expected_robot_idx);
+        const Eigen::Vector2d physical_normal(-active_dir.y(), active_dir.x());
+
         // Store reference for this horizon step
-        r.x_ref[k] = {pos.x(), pos.y(), std::atan2(dir.y(), dir.x())};
-        r.seg_normals[k] = normal;
+        r.x_ref[k] = {pos.x(), pos.y(), std::atan2(path.segmentDir(idx).y(), path.segmentDir(idx).x())};
+        r.seg_normals[k] = physical_normal; 
         r.proj_pts[k] = pos;
         r.v_profile[k] = v_k;
 
@@ -140,6 +165,8 @@ Reference ReferenceGenerator::generate(
                 pos = path.pts[idx].pos;
             }
         }
+
+        expected_robot_pos += active_dir * (v_k * dt);
     }
 
     return r;

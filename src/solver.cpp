@@ -266,9 +266,12 @@ void Solver::shiftAndStoreWarmStart()
     // timestep so it is a reasonable initial guess for the next QP.
     //
     // Decision vector layout (mirrored from qp_builder.hpp):
-    //   z = [ x_0 … x_N   (NX=3 per step, N+1 blocks)
-    //         u_0 … u_{N-1}  (NU=2 per step, N blocks)
-    //         ε_0 … ε_{N-1}  (1  per step, N blocks)  ]
+    //   z = [ x_0 … x_N      (NX=3 per step, N+1 blocks)
+    //         u_0 … u_{N-1}  (NU=2 per step, N   blocks)
+    //         ε_0 … ε_N      (1   per step, N+1 blocks)  ]  ← Bug #4 fix
+    //
+    // The slack shift runs N iterations (was N-1): ε_0←ε_1, …, ε_{N-1}←ε_N.
+    // ε_N stays in place (repeat).
 
     constexpr int NX = 3;
     constexpr int NU = 2;
@@ -309,13 +312,13 @@ void Solver::shiftAndStoreWarmStart()
     }
     // u_{N-1} unchanged (repeat)
 
-    // ── Shift slack blocks: ε_k ← ε_{k+1}, repeat ε_{N-1} ───────────
+    // ── Shift slack blocks: ε_k ← ε_{k+1}, repeat ε_N ──────────────
     const int slack_base = ctrl_base + NU * N_;
-    for (int k = 0; k < N_ - 1; ++k)
+    for (int k = 0; k < N_; ++k)  // N iterations: covers ε_{N-1} ← ε_N
     {
         z_warm_[slack_base + k] = z_warm_[slack_base + k + 1];
     }
-    // ε_{N-1} unchanged (repeat)
+    // ε_N unchanged (repeat)
 }
 
 }  // namespace mpc

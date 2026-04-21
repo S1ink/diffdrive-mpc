@@ -1,7 +1,4 @@
 #include "mpc/projection.hpp"
-
-#include <cassert>
-#include <limits>
 #include <stdexcept>
 
 namespace mpc
@@ -14,67 +11,63 @@ ProjectionResult Projector::project(const State& x, const Path& path)
         throw std::invalid_argument("Path must have >= 2 points");
     }
 
-    const size_t n_seg = path.size() - 1;
     const Eigen::Vector2d p(x.x, x.y);
 
-    // Clamp last_segment_ to a valid range after path changes.
-    if (last_segment_ >= n_seg)
+    // Clamp starting segment to valid range
+    if (last_segment_ >= path.size() - 1)
     {
-        last_segment_ = n_seg - 1;
+        last_segment_ = path.size() - 2;
     }
 
-    // ── Forward-only bounded search ───────────────────────────────────
-    // Start from last_segment_ and search at most `look_ahead` segments
-    // ahead.  We never search behind last_segment_, which keeps the robot
-    // from snapping back to an already-passed segment.
-    const size_t start = last_segment_;
-    const size_t end = std::min(n_seg, last_segment_ + look_ahead);
+    // ── Angle-Bisector Advancement (Voronoi Partitioning) ─────────────
+    // Move forward through the path as long as the robot has crossed the
+    // angle bisector plane of the next waypoint.
+    while (last_segment_ < path.size() - 2)
+    {
+        const Eigen::Vector2d A = path.pts[last_segment_].pos;
+        const Eigen::Vector2d B = path.pts[last_segment_ + 1].pos;
+        const Eigen::Vector2d C = path.pts[last_segment_ + 2].pos;
+
+        const Eigen::Vector2d dir1 = (B - A).normalized();
+        const Eigen::Vector2d dir2 = (C - B).normalized();
+
+        // The normal of the bisector plane (pointing "forward" into the next segment)
+        // is simply the sum of the two unit direction vectors.
+        Eigen::Vector2d n_bisect = dir1 + dir2;
+
+        // Fallback if the path doubles back on itself perfectly (U-turn)
+        if (n_bisect.squaredNorm() < 1e-6)
+        {
+            n_bisect = dir1;
+        }
+
+        // If the dot product is positive, point 'p' has crossed the bisector plane
+        if ((p - B).dot(n_bisect) > 0.0)
+        {
+            last_segment_++;
+        }
+        else
+        {
+            break;  // Still in the region of the current segment
+        }
+    }
+
+    // ── Final Projection onto the active segment ──────────────────────
+    const Eigen::Vector2d A = path.pts[last_segment_].pos;
+    const Eigen::Vector2d B = path.pts[last_segment_ + 1].pos;
+    const Eigen::Vector2d AB = B - A;
+    const double len_sq = AB.squaredNorm();
 
     ProjectionResult best;
-    best.segment_index = start;
-    double best_dist = std::numeric_limits<double>::max();
+    best.segment_index = last_segment_;
+    best.t = 0.0;
 
-    for (size_t i = start; i < end; ++i)
+    if (len_sq > 1e-12)
     {
-        const Eigen::Vector2d A = path.pts[i].pos;
-        const Eigen::Vector2d B = path.pts[i + 1].pos;
-        const Eigen::Vector2d AB = B - A;
-        const double len_sq = AB.squaredNorm();
-
-        // Parametric projection, clamped to [0,1]
-        double t = 0.0;
-        if (len_sq > 1e-12)
-        {
-            t = std::clamp((p - A).dot(AB) / len_sq, 0.0, 1.0);
-        }
-
-        const Eigen::Vector2d proj = A + t * AB;
-        const double d = (p - proj).norm();
-
-        if (d < best_dist)
-        {
-            best_dist = d;
-            best.segment_index = i;
-            best.t = t;
-            best.proj = proj;
-        }
+        best.t = std::clamp((p - A).dot(AB) / len_sq, 0.0, 1.0);
     }
 
-    // ── Hysteresis: advance last_segment_ conservatively ─────────────
-    // If the best match is ahead of where we were, always accept it.
-    // If the best match is on last_segment_, only advance when t > threshold
-    // so we don't flip to the next segment prematurely.
-    if (best.segment_index > last_segment_)
-    {
-        last_segment_ = best.segment_index;
-    }
-    else if (
-        best.segment_index == last_segment_ && best.t > seg_advance_t &&
-        last_segment_ + 1 < n_seg)
-    {
-        last_segment_++;
-    }
-
+    best.proj = A + best.t * AB;
     return best;
 }
 

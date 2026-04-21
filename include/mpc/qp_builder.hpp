@@ -18,7 +18,7 @@ constexpr int NU = 2;  // control [v, ω]
 //
 //   z = [ x_0 … x_N   (NX each, N+1 blocks)
 //       | u_0 … u_{N-1}  (NU each, N blocks)
-//       | ε_0 … ε_{N-1}  (1  each, N blocks) ← corridor slack ]
+//       | ε_0 … ε_N      (1  each, N+1 blocks) ← corridor slack ]
 
 inline int idx_x(int k) { return NX * k; }
 inline int idx_u(int k, int N) { return NX * (N + 1) + NU * k; }
@@ -39,6 +39,10 @@ struct QPContext
 {
     /// Effective corridor half-width [m].  Widened during recovery.
     double d_hard_eff = 0.08;
+
+    /// Raw initial cross-track error [m] at step k=0. Used to build
+    /// the dynamic feasibility funnel.
+    double cte_raw = 0.0;
 
     /// Effective heading weight.  Reduced when far from path to prevent
     /// spinning in place instead of recovering lateral position.

@@ -17,10 +17,12 @@ namespace mpc
 
 // ── Debug / visualisation snapshot ───────────────────────────────────────────
 
-/// Everything a visualizer needs from one MPC cycle.
+/// Everything a visualizer / ROS publisher needs from one MPC cycle.
 /// Populated unconditionally by MPCController::update(); read via debugInfo().
 struct DebugInfo
 {
+    // ── Trajectories ──────────────────────────────────────────────────
+
     /// MPC-predicted state trajectory x_0 … x_N (from OSQP solution).
     /// Empty if the solver failed.
     std::vector<State> pred_traj;
@@ -28,25 +30,51 @@ struct DebugInfo
     /// Blended reference trajectory x_0 … x_N used to build the QP.
     std::vector<State> ref_traj;
 
+    // ── Corridor geometry ─────────────────────────────────────────────
+
     /// Unit normals of the assigned corridor segment for each horizon step.
+    /// Length N+1.  Used to draw corridor walls in Foxglove.
     std::vector<Eigen::Vector2d> seg_normals;
 
     /// Closest point on the path for each horizon step (corridor centre).
+    /// Length N+1.
     std::vector<Eigen::Vector2d> proj_pts;
-
-    /// Effective corridor half-width [m] used this cycle (may be widened
-    /// during recovery relative to params.d_hard).
-    double d_hard_eff = 0.0;
-
-    /// Raw (un-deadbanded) signed cross-track error [m] at the measured state.
-    /// Positive = left of path.
-    double cte_raw = 0.0;
 
     /// Closest point on path to the (latency-compensated) robot position.
     Eigen::Vector2d proj_pt = Eigen::Vector2d::Zero();
 
+    // ── Velocity profile ──────────────────────────────────────────────
+
+    /// Reference speed at each horizon step [m/s].  Length N+1.
+    /// Incorporates curvature limit, braking limit, and v_scale.
+    std::vector<double> v_profile;
+
+    // ── Adaptive scalars ──────────────────────────────────────────────
+
+    /// Effective corridor half-width [m] used this cycle.
+    /// May be widened relative to params.d_hard during recovery.
+    double d_hard_eff = 0.0;
+
+    /// Raw (un-deadbanded) signed cross-track error [m].
+    /// Positive = robot is to the left of the path.
+    double cte_raw = 0.0;
+
+    /// Velocity reduction scale factor this cycle.
+    /// v_scale = clamp(1 − v_error_gain·|cte|,  v_min_scale, 1).
+    double v_scale = 1.0;
+
+    /// Effective heading weight Q_theta * exp(−heading_scale_k * |cte|).
+    /// Lower when the robot is far from the path so it converges laterally
+    /// before aligning heading.
+    double Q_theta_eff = 0.0;
+
+    // ── Status flags ──────────────────────────────────────────────────
+
     /// true if OSQP reported OSQP_SOLVED this cycle.
     bool solver_ok = false;
+
+    /// true when remaining path length < params.goal_threshold.
+    bool near_goal = false;
 };
 
 // ── Controller ────────────────────────────────────────────────────────────────

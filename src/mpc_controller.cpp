@@ -41,19 +41,14 @@ Control MPCController::update(const State& x_measured, const Path& path)
     const State x_pred = latencyCompensate(x_measured);
 
     // ── C1. Projection — forward-only with hysteresis ─────────────────
-    // On the first call, or when the path has changed and the robot's
-    // projected position is far from the nearest point on the new path,
-    // reset the projector so the segment search restarts from the beginning.
     if (!has_prev_ref_)
     {
         projector_.reset();
     }
     else
     {
-        // Quick path-change check: project onto new path without hysteresis
-        // to see how far we'd jump.  A cheap single-pass is fine here.
         Projector tmp_proj;
-        tmp_proj.look_ahead = path.size();  // unrestricted scan
+        tmp_proj.look_ahead = path.size();
         const ProjectionResult new_p = tmp_proj.project(x_pred, path);
         const double jump = (new_p.proj - ref_prev_.proj_pts[0]).norm();
         if (jump > params_.path_reset_threshold)
@@ -90,7 +85,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
                               ? blend(new_ref, ref_prev_, params_.blend_alpha)
                               : new_ref;
 
-    ref_prev_ = new_ref;  // store un-blended as base for next iteration
+    ref_prev_ = new_ref;
     has_prev_ref_ = true;
 
     // ── D1. Adaptive corridor width ────────────────────────────────────
@@ -101,8 +96,6 @@ Control MPCController::update(const State& x_measured, const Path& path)
     }
 
     // ── F1. Adaptive heading weight ────────────────────────────────────
-    // Reduce heading penalty when far off path to allow the robot to
-    // prioritise lateral convergence over heading alignment.
     const double Q_theta_eff =
         params_.Q_theta * std::exp(-params_.heading_scale_k * std::abs(cte));
     const double Q_theta_terminal_eff =
@@ -115,16 +108,12 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── Build QPContext ────────────────────────────────────────────────
     QPContext ctx;
     ctx.d_hard_eff = d_hard_eff;
+    ctx.cte_raw = cte_raw;
     ctx.Q_theta_eff = Q_theta_eff;
     ctx.Q_theta_terminal_eff = Q_theta_terminal_eff;
     ctx.near_goal = near;
 
     // ── H. Linearise around reference trajectory ──────────────────────
-    // Linearizer::linearize(traj, u) expects:
-    //   traj.size() == N   (operating points x_0 … x_{N-1})
-    //   u.size()    == N   (operating controls  u_0 … u_{N-1})
-    // We use the blended reference states and the v_profile as the
-    // nominal forward speed (ω = 0 as nominal since path is smooth).
     const int N = params_.N;
     std::vector<State> lin_traj(N);
     std::vector<Control> lin_ctrl(N);
@@ -143,11 +132,14 @@ Control MPCController::update(const State& x_measured, const Path& path)
     debug_info_.solver_ok = ok;
     debug_info_.cte_raw = cte_raw;
     debug_info_.d_hard_eff = d_hard_eff;
+    debug_info_.v_scale = v_scale;
+    debug_info_.Q_theta_eff = Q_theta_eff;
+    debug_info_.near_goal = near;
     debug_info_.proj_pt = proj.proj;
     debug_info_.ref_traj = ref.x_ref;
     debug_info_.seg_normals = ref.seg_normals;
     debug_info_.proj_pts = ref.proj_pts;
-    // Prediction is only valid after a successful solve.
+    debug_info_.v_profile = ref.v_profile;  // post-v_scale, post-blend
     debug_info_.pred_traj =
         ok ? solver_.getStatePrediction() : std::vector<State>{};
 
@@ -181,7 +173,6 @@ double MPCController::crossTrackError(
 {
     const Eigen::Vector2d p(x.x, x.y);
     const Eigen::Vector2d dir = path.segmentDir(proj.segment_index);
-    // Left normal of travel direction
     const Eigen::Vector2d n(-dir.y(), dir.x());
     return n.dot(p - proj.proj);
 }
@@ -230,15 +221,12 @@ Reference MPCController::blend(
 
     for (int k = 0; k < n; ++k)
     {
-        // Position and heading
         out.x_ref[k].x = alpha * r_new.x_ref[k].x + beta * r_old.x_ref[k].x;
         out.x_ref[k].y = alpha * r_new.x_ref[k].y + beta * r_old.x_ref[k].y;
 
-        // Heading: blend via angle averaging (handles wrap-around)
         const double th_new = r_new.x_ref[k].theta;
         const double th_old = r_old.x_ref[k].theta;
         double d_th = th_new - th_old;
-        // Wrap d_th to (−π, π]
         while (d_th > M_PI)
         {
             d_th -= 2.0 * M_PI;
@@ -249,12 +237,10 @@ Reference MPCController::blend(
         }
         out.x_ref[k].theta = th_old + alpha * d_th;
 
-        // Corridor geometry (don't blend normals — use the new path's geometry
-        // for the constraint, only the reference point is blended)
+        // Corridor geometry always from the new path
         out.seg_normals[k] = r_new.seg_normals[k];
-        out.proj_pts[k] = alpha * r_new.proj_pts[k] + beta * r_old.proj_pts[k];
+        out.proj_pts[k] = r_new.proj_pts[k];
 
-        // Velocity profile
         out.v_profile[k] =
             alpha * r_new.v_profile[k] + beta * r_old.v_profile[k];
     }

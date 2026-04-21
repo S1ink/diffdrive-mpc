@@ -1,0 +1,52 @@
+# config/mpc_params.yaml
+# Load with: ros2 launch dd_mpc mpc.launch.py params_file:=$(ros2 pkg prefix dd_mpc)/share/dd_mpc/config/mpc_params.yaml
+#
+# All values here match sim_main.cpp defaults.
+# Override only what you want to change.
+
+mpc_node:
+  ros__parameters:
+    map_frame: "map"
+    scenario: 1
+
+    # ── Horizon ────────────────────────────────────────────────────────
+    N: 20
+    dt: 0.05              # [s]  → 20 Hz
+
+    # ── Speed limits ───────────────────────────────────────────────────
+    v_ref: 0.3            # cruise speed [m/s]
+    v_max: 0.5            # [m/s]
+    v_min: -0.1           # allow slight reverse for recovery
+    omega_max: 1.5        # [rad/s]
+
+    # ── Acceleration limits ────────────────────────────────────────────
+    a_max: 1.0            # [m/s²]
+    alpha_max: 2.0        # [rad/s²]
+
+    # ── Corridor ───────────────────────────────────────────────────────
+    d_hard: 0.05                    # nominal half-width [m]
+    adaptive_corridor_scale: 3.0    # widens to d_hard * scale during recovery
+    funnel_decay_tau: 10.0          # exponential funnel time constant [steps]
+    w_slack: 5000.0                 # quadratic slack penalty
+
+    # ── Tracking cost ──────────────────────────────────────────────────
+    Q_xy: 60.0
+    Q_theta: 10.0
+    Q_xy_terminal: 60.0
+    Q_theta_terminal: 100.0
+
+    # ── Control cost ───────────────────────────────────────────────────
+    R_v: 5.0
+    R_omega: 5.0
+    R_rate_v: 2.0
+    R_rate_omega: 5.0
+
+    # ── Robustness / adaptive features ────────────────────────────────
+    heading_scale_k: 1.0        # Q_theta *= exp(-k * |cte|)
+    blend_alpha: 0.7            # ref blending (1.0 = no blending)
+    goal_threshold: 0.3         # [m]  remaining path → enforce stop
+    d_deadband: 0.02            # [m]  ignore CTE below this
+    v_error_gain: 3.0           # velocity reduction slope
+    v_min_scale: 0.2            # minimum velocity scale factor
+    path_reset_threshold: 0.5   # [m]  large jump → reset projector
+    fallback_decay: 0.8         # scale applied to u_prev on solver failure

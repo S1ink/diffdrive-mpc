@@ -82,10 +82,13 @@ static void jd(std::ostream& s, double v, int prec = 5)
     s << std::fixed << std::setprecision(prec) << v;
 }
 
-static void writeFrame(
-    std::ostream& out1,
-    std::ostream& out2,
-    int t,
+// Bug #1 fix: returns a string so callers route through a single emitLine()
+//   lambda that writes to both stdout and data_file — the old two-stream
+//   design silently discarded every write to out2.
+// Bug #2 fix: sim_t is floating-point seconds (step * dt) so the Python
+//   visualiser's time axis is correct; the old int step index was off by 20×.
+static std::string buildFrame(
+    double sim_t,
     const State& x,
     const Control& u,
     const Path& path,
@@ -93,7 +96,9 @@ static void writeFrame(
 {
     std::ostringstream ss;
     ss << std::fixed << std::setprecision(6) << "{";
-    ss << "\"t\":" << t << ",";
+    ss << "\"t\":";
+    jd(ss, sim_t, 4);
+    ss << ",";
     ss << "\"robot\":{\"x\":" << x.x << ",\"y\":" << x.y
        << ",\"theta\":" << x.theta << "},";
     ss << "\"control\":{\"v\":" << u.v << ",\"omega\":" << u.omega << "},";
@@ -139,33 +144,35 @@ static void writeFrame(
         }
         ss << "[" << path.pts[i].pos.x() << "," << path.pts[i].pos.y() << "]";
     }
-    ss << "]}\n";
-
-    out1 << ss.str();
-    out2 << ss.str();
+    ss << "]}";
+    return ss.str();
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 int main(int argc, char** argv)
 {
     MPCParams p;  // Assuming default params set in your struct
-    p.N = 40;
+    p.N = 20;
     p.dt = 0.05;
     p.v_ref = 0.3;
     p.v_max = 0.5;
-    p.v_min = 0.0;
+    p.v_min = -0.1;
     p.omega_max = 1.5;
     p.a_max = 1.0;
     p.alpha_max = 2.0;
     p.d_hard = 0.05;
     p.adaptive_corridor_scale = 3.0;
-    p.w_slack = 1500.0;
-    p.Q_xy = 20.0;
-    p.Q_theta = 20.0;
+    p.funnel_decay_tau = 10.0;
+    p.w_slack = 5000.0;
+    p.Q_xy = 60.0;
+    p.Q_theta = 10.0;
     p.Q_xy_terminal = 60.0;
-    p.Q_theta_terminal = 20.0;
+    p.Q_theta_terminal = 100.0;
+    p.R_v = 5.0;
+    p.R_omega = 5.0;
     p.R_rate_v = 2.0;
-    p.R_rate_omega = 10.0;
+    p.R_rate_omega = 5.0;
+    p.heading_scale_k = 1.0;
     p.blend_alpha = 0.7;
     p.goal_threshold = 0.3;
 
@@ -246,23 +253,28 @@ int main(int argc, char** argv)
     hdr << "{\"params\":{\"N\":" << p.N << ",\"dt\":" << p.dt
         << ",\"v_ref\":" << p.v_ref << ",\"v_max\":" << p.v_max
         << ",\"omega_max\":" << p.omega_max << ",\"d_hard\":" << p.d_hard
-        << ",\"steps\":" << 300 << "}}";
+        << ",\"steps\":" << 500 << "}}";
     emitLine(hdr.str());
 
-    for (int t = 0; t < 300; ++t)
+    for (int step = 0; step < 500; ++step)
     {
+        const double sim_t =
+            step * p.dt;  // Bug #2 fix: seconds, not step index
+
         // Only trigger the dynamic path update if we are in the default scenario
         // AND we haven't loaded a custom path.
-        if (scenario == 0 && custom_path_file.empty() && t == 150)
+        if (scenario == 0 && custom_path_file.empty() && step == 150)
         {
-            path = makeStraightPath(5.0, 15.0, 0.3);
-            std::cerr << "[sim] path updated at step " << t << "\n";
+            path = makeStraightPath(3.0, 5.0, 0.3);
+            std::cerr << "[sim] path updated at step " << step
+                      << " (t=" << sim_t << "s)\n";
         }
 
         const Control u = ctrl.update(x, path);
         const DebugInfo& dbg = ctrl.debugInfo();
 
-        writeFrame(std::cout, data_file, t, x, u, path, dbg);
+        // Bug #1 fix: emitLine writes to both stdout and data_file
+        emitLine(buildFrame(sim_t, x, u, path, dbg));
         std::cout.flush();
 
         x = plantStep(x, u, p.dt);

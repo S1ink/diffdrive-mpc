@@ -55,6 +55,13 @@ struct MPCParams
     // by this factor so the solver remains feasible while recovering.
     double adaptive_corridor_scale = 1.8;
 
+    // ── Initial Funneling ─────────────────────────────────────────────
+    // If the robot starts outside the corridor, dynamically widen the
+    // bounds at k=0 to swallow the error, then exponentially decay the
+    // width back to d_hard over this many steps.
+    // e.g., 5.0 means the funnel closes by ~63% after 5 steps.
+    double funnel_decay_tau = 5.0;
+
     // ── Velocity reduction under error ────────────────────────────────
     // v_ref_k *= clamp(1 − v_error_gain * |cte|,  v_min_scale, 1)
     double v_error_gain = 3.0;

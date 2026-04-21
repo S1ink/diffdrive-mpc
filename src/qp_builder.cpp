@@ -12,8 +12,8 @@
 //   3. Control bounds    v_min ≤ v_k ≤ v_max,
 //                        |ω_k| ≤ ω_max                    N·NU rows
 //   4. Accel. rate       |u_k − u_{k-1}| ≤ Δu_max        N·NU rows
-//   5. Corridor          |n_k^T pos_k − c_k| ≤ d + ε_k   2·N  rows
-//   6. Slack bound       ε_k ≥ 0                          N    rows
+//   5. Corridor          |n_k^T pos_k − c_k| ≤ d_k + ε_k  2·(N+1) rows
+//   6. Slack bound       ε_k ≥ 0                           N+1  rows
 //   7. Terminal velocity v_{N-1} = 0 (near goal) or ≤ v_max (normal)  1 row
 //
 // SPARSITY INVARIANT:
@@ -50,16 +50,18 @@ QP QPBuilder::build(
     assert((int)ref.proj_pts.size() == N + 1 && "proj_pts size mismatch");
 
     // ── Variable counts ───────────────────────────────────────────────
-    const int n_vars = (N + 1) * NX + N * NU + N;
+    // Bug #4 fix: slack variables cover k = 0…N (N+1 total) so that the
+    // terminal state x_N is corridor-constrained via its own slack ε_N.
+    const int n_vars = (N + 1) * NX + N * NU + (N + 1);
 
     // ── Constraint row layout ─────────────────────────────────────────
     const int row_dyn = 0;
     const int row_ic = row_dyn + N * NX;
     const int row_ubnd = row_ic + NX;
     const int row_accel = row_ubnd + N * NU;
-    const int row_corr = row_accel + N * NU;
-    const int row_slack = row_corr + 2 * N;
-    const int row_term = row_slack + N;
+    const int row_corr = row_accel + N * NU;       // 2*(N+1) rows
+    const int row_slack = row_corr + 2 * (N + 1);  // (N+1)   rows
+    const int row_term = row_slack + (N + 1);
     const int n_constr = row_term + 1;
 
     // ── Allocate ──────────────────────────────────────────────────────
@@ -132,7 +134,7 @@ QP QPBuilder::build(
     }
 
     // ── 1c. Slack penalty ─────────────────────────────────────────────
-    for (int k = 0; k < N; ++k)
+    for (int k = 0; k <= N; ++k)  // k=0…N — includes terminal slack ε_N
     {
         Pt.emplace_back(
             idx_slack(k, N),
@@ -246,11 +248,21 @@ QP QPBuilder::build(
     // ── Group 5: Soft corridor ────────────────────────────────────────
     //
     //  e_k = n_k^T · [x_k, y_k]  −  c_k     (c_k = n_k^T · proj_k)
-    //  |e_k| ≤ d_hard_eff + ε_k
+    //  |e_k| ≤ d_k + ε_k
     //
-    //  Row A:  +n·x − ε ≤  d + c
-    //  Row B:  −n·x − ε ≤  d − c
-    for (int k = 0; k < N; ++k)
+    //  Row A:  +n·x − ε ≤  d_k + c
+    //  Row B:  −n·x − ε ≤  d_k − c
+    //
+    // Bug #4 fix: loop runs k = 0…N so that x_N is corridor-constrained.
+    //
+    // Funnel fix: d_k is the per-step effective width computed from the
+    //   initial exceedance.  Previously ctx.d_hard_eff was written to qp.u()
+    //   instead of d_k, making the funneling calculation dead code.
+
+    const double initial_exceedance =
+        std::max(0.0, std::abs(ctx.cte_raw) - ctx.d_hard_eff);
+
+    for (int k = 0; k <= N; ++k)
     {
         const int ix = idx_x(k);
         const int is = idx_slack(k, N);
@@ -259,19 +271,25 @@ QP QPBuilder::build(
         const Eigen::Vector2d& n = ref.seg_normals[k];
         const double c = n.dot(ref.proj_pts[k]);
 
+        // Exponentially tighten the corridor from the initial exceedance back
+        // down to d_hard_eff over funnel_decay_tau steps.
+        const double d_k =
+            ctx.d_hard_eff +
+            initial_exceedance * std::exp(-k / params_.funnel_decay_tau);
+
         At.emplace_back(rA, ix + 0, n.x());
         At.emplace_back(rA, ix + 1, n.y());
         At.emplace_back(rA, is, -1.0);
-        qp.u(rA) = ctx.d_hard_eff + c;
+        qp.u(rA) = d_k + c;
 
         At.emplace_back(rB, ix + 0, -n.x());
         At.emplace_back(rB, ix + 1, -n.y());
         At.emplace_back(rB, is, -1.0);
-        qp.u(rB) = ctx.d_hard_eff - c;
+        qp.u(rB) = d_k - c;
     }
 
     // ── Group 6: Slack non-negativity ─────────────────────────────────
-    for (int k = 0; k < N; ++k)
+    for (int k = 0; k <= N; ++k)  // k=0…N — mirrors the corridor loop
     {
         At.emplace_back(row_slack + k, idx_slack(k, N), 1.0);
         qp.l(row_slack + k) = 0.0;
