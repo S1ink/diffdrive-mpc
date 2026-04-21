@@ -17,8 +17,8 @@ constexpr int NU = 2;  // control [v, ω]
 // ── Decision-vector index helpers ─────────────────────────────────────────────
 //
 //   z = [ x_0 … x_N   (NX each, N+1 blocks)
-//        | u_0 … u_{N-1}  (NU each, N blocks)
-//        | ε_0 … ε_{N-1}  (1  each, N blocks) ← corridor slack ]
+//       | u_0 … u_{N-1}  (NU each, N blocks)
+//       | ε_0 … ε_{N-1}  (1  each, N blocks) ← corridor slack ]
 
 inline int idx_x(int k) { return NX * k; }
 inline int idx_u(int k, int N) { return NX * (N + 1) + NU * k; }

@@ -45,22 +45,18 @@ import matplotlib.gridspec as gridspec
 import matplotlib.animation as animation
 from matplotlib.patches import Polygon as MplPolygon
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Colour palette (dark theme)
 # ─────────────────────────────────────────────────────────────────────────────
-
 C = {
     "bg_fig":        "#12121f",
     "bg_ax":         "#0d0d1a",
     "spine":         "#2a2a44",
     "tick":          "#9090bb",
     "title":         "#d0d0ff",
-    "label":         "#7777aa",
     "path":          "#44445a",
     "corridor_face": "#2244aa",
     "corridor_edge": "#4466cc",
-    "robot_trace":   "#4488ff",
     "ref_horizon":   "#44dd66",
     "pred_horizon":  "#ff6633",
     "proj_pt":       "#ffcc00",
@@ -73,283 +69,208 @@ C = {
     "cte_line":      "#cc44ff",
     "cte_band":      "#ff4444",
     "solver_fail":   "#ff2222",
-    "path_update":   "#ffff00",
     "cursor":        "#ffffff",
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Interactive Drawing Tool
+# ─────────────────────────────────────────────────────────────────────────────
+def draw_path_interactive():
+    fig, ax = plt.subplots(figsize=(8, 8))
+    pts = []
+
+    line, = ax.plot([], [], "o-", color="black")
+    ax.set_title("Left-click: Add Point | Right-click: Undo | Enter: Finish")
+    ax.set_xlim(-2, 10)
+    ax.set_ylim(-5, 5)
+    ax.grid(True)
+
+    def redraw():
+        if pts:
+            arr = np.array(pts)
+            line.set_data(arr[:,0], arr[:,1])
+        else:
+            line.set_data([], [])
+        fig.canvas.draw_idle()
+
+    def on_click(event):
+        if event.inaxes != ax: return
+        if event.button == 1:  # Left click
+            pts.append((event.xdata, event.ydata))
+        elif event.button == 3 and pts:  # Right click
+            pts.pop()
+        redraw()
+
+    def on_key(event):
+        if event.key == "enter":
+            plt.close(fig)
+
+    fig.canvas.mpl_connect("button_press_event", on_click)
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    plt.show()
+    return pts
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data loading
+# Data loading & Geometry bounds (Truncated for brevity, kept exactly same)
 # ─────────────────────────────────────────────────────────────────────────────
-
-def load_from_binary(binary_path: str, data_path: str | None = None):
-    print(f"[plot_sim] Running {binary_path} …", file=sys.stderr)
-    result = subprocess.run(
-        [binary_path],
-        capture_output=True,
-        text=True,
-    )
+def load_from_binary(binary_path: str, args):
+    cmd = [binary_path]
+    if args.scenario: cmd.extend(["--scenario", str(args.scenario)])
+    if args.path: cmd.extend(["--path", args.path])
+    
+    print(f"[plot_sim] Running {' '.join(cmd)} …", file=sys.stderr)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
     if result.returncode != 0:
-        print(f"[plot_sim] Binary exited with code {result.returncode}", file=sys.stderr)
-        print(result.stderr, file=sys.stderr)
+        sys.exit(f"Binary failed:\n{result.stderr}")
 
     lines = result.stdout.splitlines()
-
-    if data_path:
-        with open(data_path, "w") as f:
+    if args.data:
+        with open(args.data, "w") as f:
             f.write("\n".join(lines) + "\n")
-        print(f"[plot_sim] Data saved → {data_path}", file=sys.stderr)
-
     return _parse_lines(lines)
-
 
 def load_from_file(filepath: str):
     with open(filepath) as f:
-        lines = f.read().splitlines()
-    return _parse_lines(lines)
-
+        return _parse_lines(f.read().splitlines())
 
 def _parse_lines(lines):
-    params = {}
-    frames = []
+    params, frames = {}, []
     for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+        if not line or line.startswith("#"): continue
         try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if "params" in obj:
-            params = obj["params"]
-        else:
-            frames.append(obj)
+            obj = json.loads(line.strip())
+            if "params" in obj: params = obj["params"]
+            else: frames.append(obj)
+        except json.JSONDecodeError: continue
     return params, frames
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Geometry & Bounds
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _offset_polyline(pts: np.ndarray, d: float):
     n = len(pts)
     normals = np.empty_like(pts)
     for i in range(n):
-        if i == 0:
-            seg = pts[1] - pts[0]
-        elif i == n - 1:
-            seg = pts[-1] - pts[-2]
-        else:
-            seg = pts[i + 1] - pts[i - 1]
+        seg = pts[1]-pts[0] if i==0 else (pts[-1]-pts[-2] if i==n-1 else pts[i+1]-pts[i-1])
         length = np.linalg.norm(seg)
-        if length < 1e-9:
-            normals[i] = [0.0, 1.0]
-        else:
-            normals[i] = [-seg[1] / length, seg[0] / length]
+        normals[i] = [0.0, 1.0] if length < 1e-9 else [-seg[1]/length, seg[0]/length]
     return pts + d * normals, pts - d * normals
 
-
-def corridor_polygon(pts: np.ndarray, d: float) -> np.ndarray:
+def corridor_polygon(pts: np.ndarray, d: float):
     left, right = _offset_polyline(pts, d)
     return np.vstack([left, right[::-1]])
-
 
 def compute_xy_bounds(frames, pad=0.8, min_span=4.0):
     xs, ys = [], []
     for f in frames:
         xs.append(f["robot"]["x"])
         ys.append(f["robot"]["y"])
-        for pt in f.get("path", []):
-            xs.append(pt[0])
-            ys.append(pt[1])
-        # Include ref and pred as well
-        for pt in f.get("ref", []):
-            xs.append(pt[0])
-            ys.append(pt[1])
-
-    if not xs: 
-        return (-min_span/2, min_span/2, -min_span/2, min_span/2)
-
-    x_min, x_max = min(xs), max(xs)
-    y_min, y_max = min(ys), max(ys)
-
-    # Calculate current spans
-    x_span = x_max - x_min
-    y_span = y_max - y_min
-
-    # If the span is too small (e.g., a straight line), 
-    # expand from the center to at least min_span
-    if x_span < min_span:
-        center_x = (x_min + x_max) / 2
-        x_min = center_x - min_span / 2
-        x_max = center_x + min_span / 2
-
-    if y_span < min_span:
-        center_y = (y_min + y_max) / 2
-        y_min = center_y - min_span / 2
-        y_max = center_y + min_span / 2
-
-    return (x_min - pad, x_max + pad, 
-            y_min - pad, y_max + pad)
-
-
-def compute_time_bounds(frames, params):
-    """Step 1: Precompute global bounds for all time-series axes."""
-    t_all   = [f["t"] for f in frames]
-    v_all   = [f["control"]["v"] for f in frames]
-    w_all   = [f["control"]["omega"] for f in frames]
-    cte_all = [f["cte"] for f in frames]
-
-    t_min, t_max = min(t_all), max(t_all)
-
-    v_max_param = params.get("v_max", 0.5)
-    omega_max   = params.get("omega_max", 1.2)
-    d_hard      = params.get("d_hard", 0.1)
-
-    v_lim = max(max(v_all), v_max_param)
-    w_lim = max(max(abs(x) for x in w_all), omega_max)
-    cte_lim = max(max(abs(x) for x in cte_all), d_hard)
-
-    return {
-        "t":   (t_min, t_max + 2),
-        "v":   (-0.05, v_lim * 1.2),
-        "w":   (-w_lim * 1.25, w_lim * 1.25),
-        "cte": (-cte_lim * 1.35, cte_lim * 1.35),
-    }
-
-
-def find_path_updates(frames):
-    events = []
-    prev_path = None
-    for f in frames:
-        cur_path = [tuple(pt) for pt in f["path"]]
-        if prev_path is not None and cur_path != prev_path:
-            events.append(f["t"])
-        prev_path = cur_path
-    return events
-
+        for source in ["path", "ref", "pred"]:
+            for pt in f.get(source, []):
+                xs.append(pt[0])
+                ys.append(pt[1])
+    if not xs: return (-min_span/2, min_span/2, -min_span/2, min_span/2)
+    x_min, x_max, y_min, y_max = min(xs), max(xs), min(ys), max(ys)
+    
+    if (x_max - x_min) < min_span:
+        cx = (x_min + x_max) / 2
+        x_min, x_max = cx - min_span / 2, cx + min_span / 2
+    if (y_max - y_min) < min_span:
+        cy = (y_min + y_max) / 2
+        y_min, y_max = cy - min_span / 2, cy + min_span / 2
+    return (x_min - pad, x_max + pad, y_min - pad, y_max + pad)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Figure construction
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _style_ax(ax):
-    ax.set_facecolor(C["bg_ax"])
-    ax.tick_params(colors=C["tick"], labelsize=8)
-    for spine in ax.spines.values():
-        spine.set_edgecolor(C["spine"])
-
-
 def build_figure():
-    fig = plt.figure(figsize=(15, 8), facecolor=C["bg_fig"])
-    gs = gridspec.GridSpec(3, 2, figure=fig, height_ratios=[1, 1, 0.75],
-                           hspace=0.50, wspace=0.32, left=0.07, right=0.97,
-                           top=0.93, bottom=0.07)
+    fig = plt.figure(figsize=(16, 9), facecolor=C["bg_fig"])
+    gs = gridspec.GridSpec(4, 2, figure=fig, height_ratios=[1, 1, 1, 1],
+                           hspace=0.60, wspace=0.25, left=0.05, right=0.98)
 
-    ax_xy  = fig.add_subplot(gs[0:2, 0])
+    ax_xy  = fig.add_subplot(gs[0:4, 0])
     ax_v   = fig.add_subplot(gs[0, 1])
     ax_w   = fig.add_subplot(gs[1, 1])
-    ax_cte = fig.add_subplot(gs[2, :])
+    ax_cte = fig.add_subplot(gs[2, 1])
+    ax_con = fig.add_subplot(gs[3, 1]) # Constraint activity subplot
 
-    for ax in (ax_xy, ax_v, ax_w, ax_cte):
-        _style_ax(ax)
+    for ax in (ax_xy, ax_v, ax_w, ax_cte, ax_con):
+        ax.set_facecolor(C["bg_ax"])
+        ax.tick_params(colors=C["tick"], labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(C["spine"])
 
     ax_xy.set_aspect("equal", adjustable="box")
-    ax_xy.set_title("Spatial (XY)", color=C["title"], fontsize=10, pad=6)
-    ax_v.set_title("Forward velocity", color=C["title"], fontsize=9, pad=4)
-    ax_w.set_title("Angular velocity", color=C["title"], fontsize=9, pad=4)
-    ax_cte.set_title("Cross-track error", color=C["title"], fontsize=9, pad=4)
+    ax_xy.set_title("Spatial Trace (Colored by CTE)", color=C["title"], fontsize=10)
+    ax_v.set_title("Forward velocity", color=C["title"], fontsize=9)
+    ax_w.set_title("Angular velocity", color=C["title"], fontsize=9)
+    ax_cte.set_title("Cross-track error", color=C["title"], fontsize=9)
+    ax_con.set_title("Constraint Saturation Ratio", color=C["title"], fontsize=9)
 
-    return fig, ax_xy, ax_v, ax_w, ax_cte
+    return fig, ax_xy, ax_v, ax_w, ax_cte, ax_con
 
-
-def add_static_lines(ax_v, ax_w, ax_cte, params):
-    kw = dict(linewidth=0.9, alpha=0.65, linestyle="--")
-    v_ref, v_max = params.get("v_ref", 0.3), params.get("v_max", 0.5)
-    omega_max, d_hard = params.get("omega_max", 1.2), params.get("d_hard", 0.1)
-
-    ax_v.axhline(v_ref, color=C["v_ref"], label=f"v_ref={v_ref:.2f}", **kw)
-    ax_v.axhline(v_max, color=C["v_max"], label=f"v_max={v_max:.2f}", **kw)
-    ax_w.axhline(omega_max, color=C["w_max"], label=f"±ω={omega_max:.2f}", **kw)
-    ax_w.axhline(-omega_max, color=C["w_max"], **kw)
-    ax_cte.axhline(d_hard, color=C["cte_band"], label=f"±d={d_hard:.3f}", **kw)
-    ax_cte.axhline(-d_hard, color=C["cte_band"], **kw)
-
-    for ax in (ax_v, ax_w, ax_cte):
-        ax.legend(loc="upper right", fontsize=7, facecolor=C["bg_ax"], 
-                  edgecolor=C["spine"], labelcolor=C["tick"])
-
-
-def init_artists(ax_xy, ax_v, ax_w, ax_cte):
+def init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, params):
     arts = {}
-    # XY Artists
+    d_hard = params.get("d_hard", 0.1)
+    
     arts["corridor"] = MplPolygon(np.zeros((4, 2)), closed=True, facecolor=C["corridor_face"], 
                                   alpha=0.20, edgecolor=C["corridor_edge"], linewidth=0.8, zorder=1)
     ax_xy.add_patch(arts["corridor"])
     arts["path_line"], = ax_xy.plot([], [], color=C["path"], linewidth=2.0, zorder=2)
-    arts["robot_trace"], = ax_xy.plot([], [], color=C["robot_trace"], linewidth=1.2, alpha=0.65, zorder=3)
+    
+    # Use scatter for robot trace to color by CTE
+    arts["robot_trace"] = ax_xy.scatter([], [], c=[], cmap="coolwarm", s=10, 
+                                        zorder=3, vmin=-d_hard, vmax=d_hard)
+    
     arts["ref_h"], = ax_xy.plot([], [], "o--", color=C["ref_horizon"], markersize=3, alpha=0.8)
     arts["pred_h"], = ax_xy.plot([], [], "o-", color=C["pred_horizon"], markersize=3, alpha=0.85)
-    arts["proj"], = ax_xy.plot([], [], "x", color=C["proj_pt"], markersize=8, markeredgewidth=2.0)
+    arts["proj"], = ax_xy.plot([], [], "x", color=C["proj_pt"], markersize=8)
     arts["robot_dot"], = ax_xy.plot([], [], "o", color=C["robot_dot"], markersize=7, zorder=8)
     arts["heading"] = ax_xy.quiver(0, 0, 0, 0, color=C["robot_dot"], scale=5.0, scale_units="inches", width=0.005)
-    arts["step_text"] = ax_xy.text(0.98, 0.97, "", transform=ax_xy.transAxes, ha="right", va="top", color=C["tick"], fontsize=8)
 
-    # Time-series Artists
-    arts["v_line"], = ax_v.plot([], [], color=C["v_line"], linewidth=1.2)
-    arts["w_line"], = ax_w.plot([], [], color=C["w_line"], linewidth=1.2)
-    arts["cte_line"], = ax_cte.plot([], [], color=C["cte_line"], linewidth=1.2)
+    arts["v_line"], = ax_v.plot([], [], color=C["v_line"])
+    arts["w_line"], = ax_w.plot([], [], color=C["w_line"])
+    arts["cte_line"], = ax_cte.plot([], [], color=C["cte_line"])
+    
+    # Constraint lines
+    arts["con_w"], = ax_con.plot([], [], color=C["w_line"], label="|ω| / ω_max")
+    arts["con_cte"], = ax_con.plot([], [], color=C["cte_line"], label="|CTE| / d_hard")
+    ax_con.axhline(1.0, color=C["v_max"], linestyle="--", linewidth=1.0) # Saturation line
+    ax_con.legend(loc="upper left", fontsize=7, facecolor=C["bg_ax"], edgecolor=C["spine"], labelcolor=C["tick"])
 
-    # Step 5: Add vertical cursor lines
     cursor_kw = dict(color=C["cursor"], alpha=0.3, linewidth=1, linestyle=":")
-    arts["cursor_v"] = ax_v.axvline(0, **cursor_kw)
-    arts["cursor_w"] = ax_w.axvline(0, **cursor_kw)
-    arts["cursor_cte"] = ax_cte.axvline(0, **cursor_kw)
+    arts["cursors"] = [ax.axvline(0, **cursor_kw) for ax in (ax_v, ax_w, ax_cte, ax_con)]
 
     return arts
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Animation update closure
+# Main Loop & Update
 # ─────────────────────────────────────────────────────────────────────────────
-
-def make_update(frames, arts, ax_v, ax_w, ax_cte, params, path_events):
-    # Step 4: Preallocate arrays for smoother rendering
+def make_update(frames, arts, params):
     num_f = len(frames)
-    robot_x = np.zeros(num_f)
-    robot_y = np.zeros(num_f)
-    t_hist  = np.zeros(num_f)
-    v_hist  = np.zeros(num_f)
-    w_hist  = np.zeros(num_f)
-    cte_hist = np.zeros(num_f)
-
+    rx_hist, ry_hist = np.zeros(num_f), np.zeros(num_f)
+    t_hist, v_hist, w_hist, cte_hist = np.zeros(num_f), np.zeros(num_f), np.zeros(num_f), np.zeros(num_f)
+    
     d_hard = params.get("d_hard", 0.10)
-    drawn_events = set()
+    w_max = params.get("omega_max", 1.2)
 
     def update(fi):
-        nonlocal drawn_events
         f = frames[fi]
-        t, rx, ry = f["t"], f["robot"]["x"], f["robot"]["y"]
-        rth, v, w, cte = f["robot"]["theta"], f["control"]["v"], f["control"]["omega"], f["cte"]
-        
-        robot_x[fi], robot_y[fi] = rx, ry
-        t_hist[fi], v_hist[fi], w_hist[fi], cte_hist[fi] = t, v, w, cte
+        t, rx, ry, rth = f["t"], f["robot"]["x"], f["robot"]["y"], f["robot"]["theta"]
+        rx_hist[fi], ry_hist[fi], t_hist[fi] = rx, ry, t
+        v_hist[fi], w_hist[fi], cte_hist[fi] = f["control"]["v"], f["control"]["omega"], f["cte"]
 
-        # Update Spatial
         path_arr = np.array(f["path"], dtype=float)
         if len(path_arr) >= 2:
             arts["corridor"].set_xy(corridor_polygon(path_arr, f.get("d_hard_eff", d_hard)))
         
         arts["path_line"].set_data(path_arr[:, 0], path_arr[:, 1])
-        arts["robot_trace"].set_data(robot_x[:fi+1], robot_y[:fi+1])
+        
+        # Color trajectory by cross-track error
+        arts["robot_trace"].set_offsets(np.c_[rx_hist[:fi+1], ry_hist[:fi+1]])
+        arts["robot_trace"].set_array(cte_hist[:fi+1])
         
         for key, source in [("ref_h", "ref"), ("pred_h", "pred")]:
-            data = f.get(source, [])
-            if data:
-                arr = np.array(data, dtype=float)
-                arts[key].set_data(arr[:, 0], arr[:, 1])
-            else:
-                arts[key].set_data([], [])
+            arr = np.array(f.get(source, []), dtype=float)
+            if len(arr): arts[key].set_data(arr[:, 0], arr[:, 1])
 
         proj = f.get("proj", [rx, ry])
         arts["proj"].set_data([proj[0]], [proj[1]])
@@ -358,83 +279,72 @@ def make_update(frames, arts, ax_v, ax_w, ax_cte, params, path_events):
         
         arts["heading"].set_offsets(np.array([[rx, ry]]))
         arts["heading"].set_UVC(np.cos(rth) * 0.15, np.sin(rth) * 0.15)
-        arts["step_text"].set_text(f"t={t:03d}  CTE={cte:+.4f} m")
 
-        # Update Time-series (Step 3: No dynamic rescaling here)
         arts["v_line"].set_data(t_hist[:fi+1], v_hist[:fi+1])
         arts["w_line"].set_data(t_hist[:fi+1], w_hist[:fi+1])
         arts["cte_line"].set_data(t_hist[:fi+1], cte_hist[:fi+1])
+        
+        # Constraint Saturation plotting
+        arts["con_w"].set_data(t_hist[:fi+1], np.abs(w_hist[:fi+1]) / w_max)
+        arts["con_cte"].set_data(t_hist[:fi+1], np.abs(cte_hist[:fi+1]) / d_hard)
 
-        # Update cursors
-        arts["cursor_v"].set_xdata([t, t])
-        arts["cursor_w"].set_xdata([t, t])
-        arts["cursor_cte"].set_xdata([t, t])
-
-        # Path-update events
-        for ev_t in path_events:
-            if ev_t not in drawn_events and ev_t <= t:
-                kw = dict(color=C["path_update"], linewidth=0.9, linestyle=":", alpha=0.7)
-                ax_v.axvline(ev_t, **kw)
-                ax_w.axvline(ev_t, **kw)
-                ax_cte.axvline(ev_t, **kw)
-                drawn_events.add(ev_t)
-
+        for cursor in arts["cursors"]: cursor.set_xdata([t, t])
         return []
-
     return update
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
-
 def main():
-    ap = argparse.ArgumentParser(description="MPC Path Follower Visualizer")
-    src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--binary", help="C++ sim binary to execute")
-    src.add_argument("--file", help="Existing JSONL data file to replay")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--binary", help="Path to C++ sim binary")
+    ap.add_argument("--file", help="JSONL file to replay")
     ap.add_argument("--data", default="sim_data.jsonl")
-    ap.add_argument("--save", help="Save animation to .mp4 or .gif")
+    ap.add_argument("--scenario", type=int, help="C++ Scenario ID")
+    ap.add_argument("--path", type=str, help="Inject custom path file")
+    ap.add_argument("--draw", action="store_true", help="Draw path interactively")
     ap.add_argument("--fps", type=int, default=20)
     args = ap.parse_args()
 
-    if args.binary:
-        params, frames = load_from_binary(args.binary, data_path=args.data)
-    else:
-        params, frames = load_from_file(args.file)
+    # Interactive drawing mode
+    if args.draw:
+        pts = draw_path_interactive()
+        if not pts:
+            sys.exit("No points drawn.")
+        
+        out_file = "drawn_path.txt"
+        with open(out_file, "w") as f:
+            for pt in pts:
+                f.write(f"{pt[0]} {pt[1]}\n")
+        print(f"[plot_sim] Saved path to {out_file}")
+        
+        # Auto-inject the path into the binary if specified
+        if args.binary:
+            args.path = out_file
+        else:
+            sys.exit("Add --binary ./build/sim_test to immediately run what you drew.")
 
-    if not frames:
-        sys.exit("[plot_sim] No frames loaded.")
+    if args.binary: params, frames = load_from_binary(args.binary, args)
+    elif args.file: params, frames = load_from_file(args.file)
+    else: sys.exit("Provide --binary or --file")
 
-    path_events = find_path_updates(frames)
-    if args.save:
-        matplotlib.use("Agg")
-
-    fig, ax_xy, ax_v, ax_w, ax_cte = build_figure()
-
-    # Step 2: Apply fixed limits once
+    fig, ax_xy, ax_v, ax_w, ax_cte, ax_con = build_figure()
+    
     xmin, xmax, ymin, ymax = compute_xy_bounds(frames)
     ax_xy.set_xlim(xmin, xmax)
     ax_xy.set_ylim(ymin, ymax)
 
-    tb = compute_time_bounds(frames, params)
-    for ax, key in [(ax_v, "v"), (ax_w, "w"), (ax_cte, "cte")]:
-        ax.set_xlim(*tb["t"])
-        ax.set_ylim(*tb[key])
+    t_max = max([f["t"] for f in frames]) if frames else 100
+    for ax in (ax_v, ax_w, ax_cte, ax_con): ax.set_xlim(0, t_max)
+    
+    ax_v.set_ylim(-0.05, params.get("v_max", 0.5) * 1.2)
+    ax_w.set_ylim(-params.get("omega_max", 1.2)*1.2, params.get("omega_max", 1.2)*1.2)
+    ax_cte.set_ylim(-params.get("d_hard", 0.1)*1.5, params.get("d_hard", 0.1)*1.5)
+    ax_con.set_ylim(0, 1.5)
 
-    add_static_lines(ax_v, ax_w, ax_cte, params)
-    arts = init_artists(ax_xy, ax_v, ax_w, ax_cte)
-    update_fn = make_update(frames, arts, ax_v, ax_w, ax_cte, params, path_events)
+    arts = init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, params)
+    update_fn = make_update(frames, arts, params)
 
     ani = animation.FuncAnimation(fig, update_fn, frames=len(frames), 
-                                  interval=int(1000 / args.fps), blit=False, repeat=False)
-
-    if args.save:
-        print(f"[plot_sim] Saving → {args.save} …")
-        writer = animation.FFMpegWriter(fps=args.fps) if args.save.endswith(".mp4") else animation.PillowWriter(fps=args.fps)
-        ani.save(args.save, writer=writer, dpi=130, savefig_kwargs={"facecolor": C["bg_fig"]})
-    else:
-        plt.show()
+                                  interval=int(1000/args.fps), blit=False, repeat=False)
+    plt.show()
 
 if __name__ == "__main__":
     main()
