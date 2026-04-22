@@ -104,6 +104,46 @@ Control MPCController::update(const State& x_measured, const Path& path)
         v *= v_scale;
     }
 
+    // ── Fix 1: Stanley heading correction ────────────────────────────
+    //
+    // The reference heading from the generator always points along the
+    // path tangent.  When the robot is off-path this is wrong: the
+    // optimizer needs a target that first rotates the robot TOWARD the
+    // path, not one that tells it to drive parallel to a path it cannot
+    // yet reach.
+    //
+    // Stanley steering formula:
+    //   θ_ref_k += atan2(−stanley_k · cte_raw,  max(v_k, v_min))
+    //
+    // Properties:
+    //   cte = 0      → correction = 0  (pure path-tangent, no change)
+    //   cte > 0      → negative correction (rotate right, toward path)
+    //   v large      → small correction (gentle at speed, no over-steer)
+    //   v → 0        → bounded at ≈ ±atan(stanley_k·cte/v_min) ≤ 90°
+    //
+    // Applied to new_ref before blending so the blend also interpolates
+    // the corrected heading, not just the geometric one.
+    {
+        const double k = params_.stanley_k;
+        const double v_min_st = params_.stanley_v_min;
+        for (int kk = 0; kk <= params_.N; ++kk)
+        {
+            const double v_k = std::max(new_ref.v_profile[kk], v_min_st);
+            const double correction = std::atan2(-k * cte_raw, v_k);
+            double& th = new_ref.x_ref[kk].theta;
+            th += correction;
+            // Normalise to [−π, π]
+            while (th > M_PI)
+            {
+                th -= 2.0 * M_PI;
+            }
+            while (th < -M_PI)
+            {
+                th += 2.0 * M_PI;
+            }
+        }
+    }
+
     // ── C2. Blend with previous reference to smooth same-path updates ──
     //
     // Blending is suppressed when the path has changed: applying the old
@@ -124,6 +164,9 @@ Control MPCController::update(const State& x_measured, const Path& path)
     }
 
     // ── F1. Adaptive heading weight ────────────────────────────────────
+    //
+    // heading_scale_k defaults to 0.0 (disabled).  See params.hpp for why
+    // suppressing heading weight at large CTE is counterproductive.
     const double Q_theta_eff =
         params_.Q_theta * std::exp(-params_.heading_scale_k * std::abs(cte));
     const double Q_theta_terminal_eff =
@@ -141,52 +184,34 @@ Control MPCController::update(const State& x_measured, const Path& path)
     ctx.Q_theta_terminal_eff = Q_theta_terminal_eff;
     ctx.near_goal = near;
 
-    // ── H. Linearise around reference trajectory ──────────────────────
+    // ── H. Linearise around previous predicted trajectory (SQP step) ──
+    //
+    // Linearizing around the reference works well when the robot is close
+    // to the path.  When it is not — exactly the situation we are trying
+    // to recover from — the unicycle Jacobians evaluated at the reference
+    // heading are a poor approximation of the actual dynamics, and the
+    // resulting QP produces controls that do not achieve the predicted
+    // effect in the real plant.
+    //
+    // One SQP iteration: use the previous cycle's predicted state
+    // trajectory as the linearization point.  When the prediction is
+    // close to the actual trajectory (warm-start quality is good) this
+    // is significantly more accurate at no extra solver cost.
+    // Falls back to ref.x_ref if no valid previous prediction exists
+    // (first cycle, or after a solver failure).
     const int N = params_.N;
     std::vector<State> lin_traj(N);
     std::vector<Control> lin_ctrl(N);
-    const std::vector<State>& prev_pred = debug_info_.pred_traj;
-    for (int k = 0; k < N; ++k)
     {
-        lin_traj[k] =
-            (prev_pred.size() > (size_t)k) ? prev_pred[k] : ref.x_ref[k];
-        lin_ctrl[k] = {ref.v_profile[k], 0.0};
-    }
-    const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
-
-    const double recovery_ratio = std::clamp(
-        (std::abs(cte_raw) - params_.d_hard) / params_.d_hard,
-        0.0,
-        1.0);  // 0 = inside corridor, 1 = at 2×d_hard or beyond
-
-    if (recovery_ratio > 0.0)
-    {
-        // Direction from robot toward the nearest path point
-        const Eigen::Vector2d to_path =
-            (proj.proj - Eigen::Vector2d(x_pred.x, x_pred.y)).normalized();
-        const double theta_toward_path = std::atan2(to_path.y(), to_path.x());
-
-        for (int k = 0; k < std::min(params_.N / 2, params_.N); ++k)
+        const std::vector<State>& prev_pred = debug_info_.pred_traj;
+        const bool have_prev_pred = ((int)prev_pred.size() >= N);
+        for (int k = 0; k < N; ++k)
         {
-            // Blend weight decays with horizon step (early steps get more recovery bias)
-            const double step_weight =
-                std::max(0.0, 1.0 - (double)k / (params_.N / 2));
-            const double w = recovery_ratio * step_weight;
-
-            const double th_path = new_ref.x_ref[k].theta;
-            // Interpolate: w=1 → face path, w=0 → path tangent
-            double d_th = theta_toward_path - th_path;
-            while (d_th > M_PI)
-            {
-                d_th -= 2.0 * M_PI;
-            }
-            while (d_th < -M_PI)
-            {
-                d_th += 2.0 * M_PI;
-            }
-            new_ref.x_ref[k].theta = th_path + w * d_th;
+            lin_traj[k] = have_prev_pred ? prev_pred[k] : ref.x_ref[k];
+            lin_ctrl[k] = {ref.v_profile[k], 0.0};
         }
     }
+    const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
 
     // ── Build and solve QP ────────────────────────────────────────────
     const QP qp = qp_builder_.build(x_pred, u_prev_, ref, model, ctx);

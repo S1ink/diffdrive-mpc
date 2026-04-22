@@ -177,8 +177,8 @@ QP QPBuilder::build(
         }
         for (int i = 0; i < NX; ++i)
         {
-            qp.l(row + i) = 0.0;
-            qp.u(row + i) = 0.0;
+            qp.l(row + i) = model.d[k](i);
+            qp.u(row + i) = model.d[k](i);
         }
     }
 
