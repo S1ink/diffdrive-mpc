@@ -8,12 +8,12 @@ namespace mpc
 struct MPCParams
 {
     // ── Horizon ──────────────────────────────────────────────────────
-    int N = 15;        // prediction horizon (steps)
+    int N = 25;        // prediction horizon (steps)
     double dt = 0.05;  // timestep [s]  → 20 Hz
 
     // ── Velocity limits ───────────────────────────────────────────────
-    double v_max = 0.8;      // max forward speed   [m/s]
-    double v_min = 0.0;      // min forward speed   [m/s]
+    double v_max = 1.2;      // max forward speed   [m/s]
+    double v_min = -0.1;      // min forward speed   [m/s]
     double omega_max = 1.2;  // max angular speed   [rad/s]
 
     // ── Acceleration limits ───────────────────────────────────────────
@@ -30,7 +30,7 @@ struct MPCParams
     double w_slack = 2000.0;  // quadratic penalty on corridor slack ε_k
 
     // ── Tracking cost ─────────────────────────────────────────────────
-    double Q_xy = 20.0;             // position weight (intermediate steps)
+    double Q_xy = 40.0;             // position weight (intermediate steps)
     double Q_theta = 2.0;           // heading weight  (intermediate steps)
     double Q_xy_terminal = 80.0;    // elevated position weight at step N
     double Q_theta_terminal = 8.0;  // elevated heading weight  at step N

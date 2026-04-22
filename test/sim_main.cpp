@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <utility>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -251,17 +252,33 @@ int main(int argc, char** argv)
         }
     };
 
+    // ── Termination parameters ────────────────────────────────────────────────
+    // Run until:
+    //  (a) controller reports near_goal  (remaining arc < goal_threshold), OR
+    //  (b) robot is stuck: net displacement over STUCK_WINDOW steps < STUCK_DIST_M
+    //      AND average forward speed < STUCK_SPEED_MPS, OR
+    //  (c) MAX_STEPS hard safety cap.
+    static constexpr int MAX_STEPS = 10000;
+    static constexpr int STUCK_WINDOW = 100;  // steps  (~5 s at 20 Hz)
+    static constexpr double STUCK_DIST_M =
+        0.05;  // m  net displacement threshold
+    static constexpr double STUCK_SPEED_MPS =
+        0.02;  // m/s average speed threshold
+
     std::ostringstream hdr;
     hdr << "{\"params\":{\"N\":" << p.N << ",\"dt\":" << p.dt
         << ",\"v_ref\":" << p.v_ref << ",\"v_max\":" << p.v_max
         << ",\"omega_max\":" << p.omega_max << ",\"d_hard\":" << p.d_hard
-        << ",\"steps\":" << 500 << "}}";
+        << ",\"max_steps\":" << MAX_STEPS << "}}";
     emitLine(hdr.str());
 
-    for (int step = 0; step < 500; ++step)
+    // Sliding window of positions for stuck detection.
+    std::vector<std::pair<double, double>> pos_history;
+    pos_history.reserve(STUCK_WINDOW + 1);
+
+    for (int step = 0; step < MAX_STEPS; ++step)
     {
-        const double sim_t =
-            step * p.dt;  // Bug #2 fix: seconds, not step index
+        const double sim_t = step * p.dt;
 
         // Only trigger the dynamic path update if we are in the default scenario
         // AND we haven't loaded a custom path.
@@ -275,12 +292,51 @@ int main(int argc, char** argv)
         const Control u = ctrl.update(x, path);
         const DebugInfo& dbg = ctrl.debugInfo();
 
-        // Bug #1 fix: emitLine writes to both stdout and data_file
         emitLine(buildFrame(sim_t, x, u, path, dbg));
         std::cout.flush();
 
         x = plantStep(x, u, p.dt);
-    }
 
+        // ── (a) Goal reached ───────────────────────────────────────────────────
+        if (dbg.near_goal)
+        {
+            std::cerr << "[sim] Goal reached at t=" << sim_t + p.dt
+                      << "s (step " << step + 1 << ")\n";
+            // break;
+        }
+
+        // ── (b) Stuck detection ────────────────────────────────────────────────
+        pos_history.push_back({x.x, x.y});
+        if ((int)pos_history.size() > STUCK_WINDOW)
+        {
+            pos_history.erase(pos_history.begin());
+        }
+
+        if ((int)pos_history.size() == STUCK_WINDOW)
+        {
+            const double dx = x.x - pos_history.front().first;
+            const double dy = x.y - pos_history.front().second;
+            const double net_disp = std::sqrt(dx * dx + dy * dy);
+
+            double path_len = 0.0;
+            for (int j = 1; j < STUCK_WINDOW; ++j)
+            {
+                const double ddx =
+                    pos_history[j].first - pos_history[j - 1].first;
+                const double ddy =
+                    pos_history[j].second - pos_history[j - 1].second;
+                path_len += std::sqrt(ddx * ddx + ddy * ddy);
+            }
+            const double avg_speed = path_len / (STUCK_WINDOW * p.dt);
+
+            if (net_disp < STUCK_DIST_M && avg_speed < STUCK_SPEED_MPS)
+            {
+                std::cerr << "[sim] Robot stuck at t=" << sim_t + p.dt
+                          << "s (net_disp=" << net_disp
+                          << "m, avg_speed=" << avg_speed << "m/s)\n";
+                break;
+            }
+        }
+    }
     return 0;
 }

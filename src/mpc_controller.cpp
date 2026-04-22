@@ -214,7 +214,32 @@ Control MPCController::update(const State& x_measured, const Path& path)
     const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
 
     // ── Build and solve QP ────────────────────────────────────────────
-    const QP qp = qp_builder_.build(x_pred, u_prev_, ref, model, ctx);
+    // ── Fix: Normalise reference headings relative to x_pred.theta ──────────
+    //
+    // The QP cost treats theta as a plain linear variable.  When ref.x_ref[k].theta
+    // is on the opposite side of the +-pi wrap from x_pred.theta the apparent
+    // angular error can reach ~2*pi, saturating omega every cycle and causing
+    // the observed lateral oscillation on the return leg.
+    // We make a shallow copy and nudge every heading into [-pi, pi] around the
+    // current predicted heading before handing off to the QP builder.
+    Reference ref_qp = ref;
+    {
+        const double anchor = x_pred.theta;
+        for (auto& s : ref_qp.x_ref)
+        {
+            double d = s.theta - anchor;
+            while (d > M_PI)
+            {
+                d -= 2.0 * M_PI;
+            }
+            while (d < -M_PI)
+            {
+                d += 2.0 * M_PI;
+            }
+            s.theta = anchor + d;
+        }
+    }
+    const QP qp = qp_builder_.build(x_pred, u_prev_, ref_qp, model, ctx);
     const bool ok = solver_.update(qp, N);
 
     // ── Populate debug snapshot ────────────────────────────────────────
@@ -324,7 +349,21 @@ Reference MPCController::blend(
         {
             d_th += 2.0 * M_PI;
         }
-        out.x_ref[k].theta = th_old + alpha * d_th;
+        // Normalise interpolated heading back to [-pi, pi].
+        // Without this, th_old + alpha*d_th can slip outside that range
+        // and silently corrupt subsequent cycles.
+        {
+            double th = th_old + alpha * d_th;
+            while (th > M_PI)
+            {
+                th -= 2.0 * M_PI;
+            }
+            while (th < -M_PI)
+            {
+                th += 2.0 * M_PI;
+            }
+            out.x_ref[k].theta = th;
+        }
 
         // Corridor geometry always from the new path (never blend normals:
         // mixing normals from two different path geometries would corrupt the
