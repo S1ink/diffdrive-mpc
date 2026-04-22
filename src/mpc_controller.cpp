@@ -1,5 +1,7 @@
 #include "mpc/mpc_controller.hpp"
 
+#include <chrono>
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -29,6 +31,22 @@ void MPCController::reset()
     debug_info_ = DebugInfo{};
 }
 
+// ── pruneTraversedSegments ────────────────────────────────────────────────────────
+
+size_t MPCController::pruneTraversedSegments(Path& path)
+{
+    const size_t n_remove = debug_info_.proj_segment_index;
+    if (n_remove == 0 || path.size() <= n_remove + 1)
+    {
+        return 0;
+    }
+    path.pts.erase(
+        path.pts.begin(),
+        path.pts.begin() + static_cast<std::ptrdiff_t>(n_remove));
+    // Path hash changes next cycle → projector_.reset() runs automatically.
+    return n_remove;
+}
+
 // ── Path hash ─────────────────────────────────────────────────────────────────
 
 size_t MPCController::hashPath(const Path& path)
@@ -50,6 +68,8 @@ size_t MPCController::hashPath(const Path& path)
 
 Control MPCController::update(const State& x_measured, const Path& path)
 {
+    const auto t0 = std::chrono::high_resolution_clock::now();
+
     if (!path.valid())
     {
         debug_info_ = DebugInfo{};
@@ -173,55 +193,8 @@ Control MPCController::update(const State& x_measured, const Path& path)
         params_.Q_theta_terminal *
         std::exp(-params_.heading_scale_k * std::abs(cte));
 
-    // ── C3. Near-goal detection ────────────────────────────────────────
-    const bool near = nearGoal(path, proj);
-
-    // ── Build QPContext ────────────────────────────────────────────────
-    QPContext ctx;
-    ctx.d_hard_eff = d_hard_eff;
-    ctx.cte_raw = cte_raw;
-    ctx.Q_theta_eff = Q_theta_eff;
-    ctx.Q_theta_terminal_eff = Q_theta_terminal_eff;
-    ctx.near_goal = near;
-
-    // ── H. Linearise around previous predicted trajectory (SQP step) ──
-    //
-    // Linearizing around the reference works well when the robot is close
-    // to the path.  When it is not — exactly the situation we are trying
-    // to recover from — the unicycle Jacobians evaluated at the reference
-    // heading are a poor approximation of the actual dynamics, and the
-    // resulting QP produces controls that do not achieve the predicted
-    // effect in the real plant.
-    //
-    // One SQP iteration: use the previous cycle's predicted state
-    // trajectory as the linearization point.  When the prediction is
-    // close to the actual trajectory (warm-start quality is good) this
-    // is significantly more accurate at no extra solver cost.
-    // Falls back to ref.x_ref if no valid previous prediction exists
-    // (first cycle, or after a solver failure).
-    const int N = params_.N;
-    std::vector<State> lin_traj(N);
-    std::vector<Control> lin_ctrl(N);
-    {
-        const std::vector<State>& prev_pred = debug_info_.pred_traj;
-        const bool have_prev_pred = ((int)prev_pred.size() >= N);
-        for (int k = 0; k < N; ++k)
-        {
-            lin_traj[k] = have_prev_pred ? prev_pred[k] : ref.x_ref[k];
-            lin_ctrl[k] = {ref.v_profile[k], 0.0};
-        }
-    }
-    const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
-
-    // ── Build and solve QP ────────────────────────────────────────────
-    // ── Fix: Normalise reference headings relative to x_pred.theta ──────────
-    //
-    // The QP cost treats theta as a plain linear variable.  When ref.x_ref[k].theta
-    // is on the opposite side of the +-pi wrap from x_pred.theta the apparent
-    // angular error can reach ~2*pi, saturating omega every cycle and causing
-    // the observed lateral oscillation on the return leg.
-    // We make a shallow copy and nudge every heading into [-pi, pi] around the
-    // current predicted heading before handing off to the QP builder.
+    // ── Normalise reference headings (heading-wrap fix) ─────────────────
+    // Moved here so the recovery check below can read corrected heading at k=0.
     Reference ref_qp = ref;
     {
         const double anchor = x_pred.theta;
@@ -239,6 +212,80 @@ Control MPCController::update(const State& x_measured, const Path& path)
             s.theta = anchor + d;
         }
     }
+
+    // ── Recovery: point-turn bypass ────────────────────────────────────────
+    //
+    // When the corrected reference heading at k=0 differs from x_pred.theta
+    // by more than recovery_heading_threshold the QP gradient is nearly flat
+    // and OSQP cannot converge to a useful command.  We bypass the solver and
+    // issue v=0, ω=±ω_max until the error falls below threshold.
+    //
+    // Handles: (1) tight U-turns; (2) path updates that place the remaining
+    // path entirely behind the robot (Stanley targets ~180° from heading).
+    {
+        double h_err = ref_qp.x_ref[0].theta - x_pred.theta;
+        while (h_err > M_PI)
+        {
+            h_err -= 2.0 * M_PI;
+        }
+        while (h_err < -M_PI)
+        {
+            h_err += 2.0 * M_PI;
+        }
+
+        if (std::abs(h_err) > params_.recovery_heading_threshold)
+        {
+            const Control u_rec = {
+                0.0,
+                std::copysign(params_.omega_max, h_err)};
+            debug_info_.solver_ok = false;
+            debug_info_.solve_ms = 0.0;
+            debug_info_.cte_raw = cte_raw;
+            debug_info_.d_hard_eff = d_hard_eff;
+            debug_info_.v_scale = v_scale;
+            debug_info_.Q_theta_eff = Q_theta_eff;
+            debug_info_.near_goal = false;
+            debug_info_.proj_pt = proj.proj;
+            debug_info_.proj_segment_index = proj.segment_index;
+            debug_info_.ref_traj = ref_qp.x_ref;
+            debug_info_.seg_normals = ref_qp.seg_normals;
+            debug_info_.proj_pts = ref_qp.proj_pts;
+            debug_info_.v_profile = ref_qp.v_profile;
+            u_prev_ = u_rec;
+            return u_rec;
+        }
+    }
+
+    // ── C3. Near-goal detection ────────────────────────────────────────
+    // Terminal-v=0 only when BOTH near the path end AND laterally close.
+    const bool near =
+        nearGoal(path, proj) &&
+        (std::abs(cte_raw) < params_.d_hard * params_.goal_cte_scale);
+
+    // ── Build QPContext ─────────────────────────────────────────
+    QPContext ctx;
+    ctx.d_hard_eff = d_hard_eff;
+    ctx.cte_raw = cte_raw;
+    ctx.Q_theta_eff = Q_theta_eff;
+    ctx.Q_theta_terminal_eff = Q_theta_terminal_eff;
+    ctx.near_goal = near;
+
+    // ── H. Linearise around previous predicted trajectory (SQP step) ──
+    const int N = params_.N;
+    std::vector<State> lin_traj(N);
+    std::vector<Control> lin_ctrl(N);
+    {
+        const std::vector<State>& prev_pred = debug_info_.pred_traj;
+        const bool have_prev_pred = ((int)prev_pred.size() >= N);
+        for (int k = 0; k < N; ++k)
+        {
+            lin_traj[k] = have_prev_pred ? prev_pred[k] : ref.x_ref[k];
+            lin_ctrl[k] = {ref.v_profile[k], 0.0};
+        }
+    }
+    const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
+
+    // ── Build QP and solve with wall-clock timing ────────────────────
     const QP qp = qp_builder_.build(x_pred, u_prev_, ref_qp, model, ctx);
     const bool ok = solver_.update(qp, N);
 
@@ -250,12 +297,18 @@ Control MPCController::update(const State& x_measured, const Path& path)
     debug_info_.Q_theta_eff = Q_theta_eff;
     debug_info_.near_goal = near;
     debug_info_.proj_pt = proj.proj;
+    debug_info_.proj_segment_index = proj.segment_index;
     debug_info_.ref_traj = ref.x_ref;
     debug_info_.seg_normals = ref.seg_normals;
     debug_info_.proj_pts = ref.proj_pts;
     debug_info_.v_profile = ref.v_profile;  // post-v_scale, post-blend
     debug_info_.pred_traj =
         ok ? solver_.getStatePrediction() : std::vector<State>{};
+
+    debug_info_.solve_ms = std::chrono::duration<double, std::milli>(
+                               std::chrono::high_resolution_clock::now() - t0)
+                               .count();
+    ;
 
     // ── G. Failure fallback ────────────────────────────────────────────
     if (!ok)

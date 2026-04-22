@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cmath>
+
+
 namespace mpc
 {
 
@@ -8,11 +11,11 @@ namespace mpc
 struct MPCParams
 {
     // ── Horizon ──────────────────────────────────────────────────────
-    int N = 25;        // prediction horizon (steps)
+    int N = 15;        // prediction horizon (steps)
     double dt = 0.05;  // timestep [s]  → 20 Hz
 
     // ── Velocity limits ───────────────────────────────────────────────
-    double v_max = 1.2;      // max forward speed   [m/s]
+    double v_max = 1.5;      // max forward speed   [m/s]
     double v_min = -0.1;      // min forward speed   [m/s]
     double omega_max = 1.2;  // max angular speed   [rad/s]
 
@@ -27,7 +30,7 @@ struct MPCParams
     // ── Corridor / soft constraint ────────────────────────────────────
     double d_hard = 0.05;  // hard corridor half-width [m]
     //   = path_tolerance + noise_margin  (e.g. 5 cm + 3 cm)
-    double w_slack = 2000.0;  // quadratic penalty on corridor slack ε_k
+    double w_slack = 4000.0;  // quadratic penalty on corridor slack ε_k
 
     // ── Tracking cost ─────────────────────────────────────────────────
     double Q_xy = 40.0;             // position weight (intermediate steps)
@@ -48,12 +51,12 @@ struct MPCParams
     double seg_advance_t = 0.7;
 
     // ── Noise deadband ────────────────────────────────────────────────
-    double d_deadband = 0.025;  // ignore tracking errors below this [m]
+    double d_deadband = 0.015;  // ignore tracking errors below this [m]
 
     // ── Adaptive corridor ─────────────────────────────────────────────
     // When cross-track error exceeds d_hard, scale the corridor width up
     // by this factor so the solver remains feasible while recovering.
-    double adaptive_corridor_scale = 1.8;
+    double adaptive_corridor_scale = 1.3;
 
     // ── Initial Funneling ─────────────────────────────────────────────
     // If the robot starts outside the corridor, dynamically widen the
@@ -64,7 +67,7 @@ struct MPCParams
     // ── Velocity reduction under error ────────────────────────────────
     // v_ref_k *= clamp(1 − v_error_gain * |cte|,  v_min_scale, 1)
     double v_error_gain = 3.0;
-    double v_min_scale = 0.0;  // 0 allows full stop for point-turn recovery
+    double v_min_scale = 0.1;  // 0 allows full stop for point-turn recovery
 
     // ── Reference blending ────────────────────────────────────────────
     // Smooths abrupt same-path numerical jitter: ref = α·new + (1−α)·old.
@@ -88,7 +91,7 @@ struct MPCParams
     // Recommended starting values: stanley_k ∈ [1.5, 4.0].
     // Larger values produce more aggressive rotation toward the path but
     // can over-correct at high speed; smaller values are gentler.
-    double stanley_k = 2.5;
+    double stanley_k = 3.5;
     double stanley_v_min = 0.15;  // [m/s]
 
     // ── Heading weight scaling ────────────────────────────────────────
@@ -111,7 +114,27 @@ struct MPCParams
     // When remaining path length drops below this, enforce v_N = 0.
     double goal_threshold = 0.03;  // [m]
 
-    // ── Solver failure fallback ───────────────────────────────────────
+    // ── Recovery ─────────────────────────────────────────────────────────
+    // When the corrected reference heading at k=0 differs from the robot's
+    // current heading by more than this angle, the controller bypasses the QP
+    // entirely and issues a pure point-turn (v=0, omega=±omega_max) until the
+    // heading is within threshold.  This handles tight U-turns and the
+    // "robot facing entirely wrong direction" case that OSQP cannot resolve
+    // through gradient descent alone.
+    //
+    // Set to M_PI (180°) to disable.  100° is a good starting value.
+    double recovery_heading_threshold = 100.0 * M_PI / 180.0;  // [rad]
+
+    // ── nearGoal CTE gate ─────────────────────────────────────────────────
+    // The terminal-velocity-zero constraint is only applied when the robot is
+    // both close to the path end (arc < goal_threshold) AND laterally close
+    // to the path centre (|cte| < goal_cte_scale * d_hard).
+    // Without this gate the robot can get frozen at the path endpoint while
+    // still displaced sideways (e.g. when a path update puts the endpoint
+    // behind the robot).  Default 2.0 = allow terminal stop up to 2×d_hard.
+    double goal_cte_scale = 2.0;
+
+    // ── Solver failure fallback ───────────────────────────────────────────
     // On OSQP failure, return u_prev scaled by this factor.
     double fallback_decay = 0.8;
 };

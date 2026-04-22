@@ -99,10 +99,8 @@ static int segmentAtArc(const std::vector<double>& cum, double s_abs)
 
 // ── distToEnd ─────────────────────────────────────────────────────────────────
 
-double ReferenceGenerator::distToEnd(
-    const Path& path,
-    size_t idx,
-    double t) const
+double ReferenceGenerator::distToEnd(const Path& path, size_t idx, double t)
+    const
 {
     if (idx >= path.size() - 1)
     {
@@ -173,8 +171,8 @@ Reference ReferenceGenerator::generate(
     }
 
     // ── 3. Build constraint events ────────────────────────────────────
-    const std::vector<VelocityEvent> events = buildConstraintEvents(
-        path, cum, s0, params_.v_max, params_.omega_max);
+    const std::vector<VelocityEvent> events =
+        buildConstraintEvents(path, cum, s0, params_.v_max, params_.omega_max);
 
     // ── 4. Forward velocity integration with look-ahead braking ──────
     //
@@ -206,14 +204,19 @@ Reference ReferenceGenerator::generate(
                 {
                     v_cap = std::min(
                         v_cap,
-                        std::sqrt(std::max(
-                            0.0,
-                            ev.v_lim * ev.v_lim + 2.0 * params_.a_max * ds)));
+                        std::sqrt(
+                            std::max(
+                                0.0,
+                                ev.v_lim * ev.v_lim +
+                                    2.0 * params_.a_max * ds)));
                 }
             }
 
             // Advance velocity within acceleration limits.
-            v = std::clamp(v_cap, v - params_.a_max * dt, v + params_.a_max * dt);
+            v = std::clamp(
+                v_cap,
+                v - params_.a_max * dt,
+                v + params_.a_max * dt);
             v = std::max(v, 0.0);
 
             r.v_profile[k] = v;
@@ -252,7 +255,8 @@ Reference ReferenceGenerator::generate(
                 : 0.0;
 
         const Eigen::Vector2d pos =
-            path.pts[seg_k].pos + t_k * (path.pts[seg_k + 1].pos - path.pts[seg_k].pos);
+            path.pts[seg_k].pos +
+            t_k * (path.pts[seg_k + 1].pos - path.pts[seg_k].pos);
 
         const Eigen::Vector2d ref_dir = path.segmentDir(seg_k);
         const double theta_ref = std::atan2(ref_dir.y(), ref_dir.x());
@@ -291,7 +295,22 @@ Reference ReferenceGenerator::generate(
         // ── Store ──────────────────────────────────────────────────────
         r.x_ref[k] = {pos.x(), pos.y(), theta_ref};
         r.seg_normals[k] = physical_normal;
-        r.proj_pts[k] = pos;
+
+        // Project expected_robot_pos onto the active (physical) segment
+        const Eigen::Vector2d pA = path.pts[expected_robot_idx].pos;
+        const Eigen::Vector2d pB = path.pts[expected_robot_idx + 1].pos;
+        const Eigen::Vector2d pAB = pB - pA;
+        const double plen_sq = pAB.squaredNorm();
+        Eigen::Vector2d corr_proj = pA;
+        if (plen_sq > 1e-12)
+        {
+            const double t_corr = std::clamp(
+                (expected_robot_pos - pA).dot(pAB) / plen_sq,
+                0.0,
+                1.0);
+            corr_proj = pA + t_corr * pAB;
+        }
+        r.proj_pts[k] = corr_proj;  // physical projection, NOT pos (lookahead)
 
         // Advance expected robot position for the next step.
         if (k < N)

@@ -76,6 +76,15 @@ struct DebugInfo
 
     /// true when remaining path length < params.goal_threshold.
     bool near_goal = false;
+
+    /// OSQP wall-clock solve time for this cycle [ms].
+    /// Set to 0 when the QP was bypassed by point-turn recovery.
+    double solve_ms = 0.0;
+
+    /// Segment index of the closest path segment to the robot (from Projector).
+    /// All segments with index < this value have been fully traversed.
+    /// Used by pruneTraversedSegments() to trim the path.
+    size_t proj_segment_index = 0;
 };
 
 // ── Controller ────────────────────────────────────────────────────────────────
@@ -119,6 +128,23 @@ public:
     /// previous control, path hash).  Call after large teleportations or
     /// emergency stops.
     void reset();
+
+    /// Remove all fully-traversed leading path segments from `path`.
+    ///
+    /// A segment is "fully traversed" when the projector has advanced past it
+    /// (segment_index > 0 in the most recent update() result).  Trimming keeps
+    /// the active path short and prevents the robot from re-snapping to an
+    /// already-completed segment after a path update.
+    ///
+    /// Call once per cycle, after update(), passing the same Path object:
+    ///   ctrl.update(x, path);
+    ///   ctrl.pruneTraversedSegments(path);   // path shrinks in-place
+    ///
+    /// The internal projector is automatically re-aligned on the next cycle
+    /// via the path-hash change detection already present in update().
+    ///
+    /// @return Number of segments removed.
+    size_t pruneTraversedSegments(Path& path);
 
     /// Read-only access to the debug snapshot from the most recent update().
     const DebugInfo& debugInfo() const { return debug_info_; }

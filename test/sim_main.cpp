@@ -10,6 +10,7 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <random>
 
 #include "mpc/mpc_controller.hpp"
 #include "mpc/path.hpp"
@@ -115,6 +116,9 @@ static std::string buildFrame(
     jd(ss, dbg.d_hard_eff);
     ss << ",";
     ss << "\"solver_ok\":" << (dbg.solver_ok ? "true" : "false") << ",";
+    ss << "\"solve_ms\":";
+    jd(ss, dbg.solve_ms, 4);
+    ss << ",";
 
     ss << "\"pred\":[";
     for (int k = 0; k < (int)dbg.pred_traj.size(); ++k)
@@ -180,6 +184,10 @@ int main(int argc, char** argv)
     // p.goal_threshold = 0.3;
 
     MPCController ctrl(p);
+
+    std::mt19937 gen{std::random_device{}()};
+    std::normal_distribution pos_dist(0.0, 0.01);
+    std::normal_distribution ang_dist(0.0, 0.0085);
 
     int scenario = 0;
     std::string custom_path_file = "";
@@ -289,10 +297,20 @@ int main(int argc, char** argv)
                       << " (t=" << sim_t << "s)\n";
         }
 
-        const Control u = ctrl.update(x, path);
+        State x2 = x;
+        x2.x += pos_dist(gen);
+        x2.y += pos_dist(gen);
+        x2.theta += ang_dist(gen);
+        const Control u = ctrl.update(x2, path);
+        // const size_t pruned = ctrl.pruneTraversedSegments(path);
+        // if (pruned > 0)
+        // {
+        //     std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
+        //               << " segment(s), path now " << path.size() << " pts\n";
+        // }
         const DebugInfo& dbg = ctrl.debugInfo();
 
-        emitLine(buildFrame(sim_t, x, u, path, dbg));
+        emitLine(buildFrame(sim_t, x2, u, path, dbg));
         std::cout.flush();
 
         x = plantStep(x, u, p.dt);
@@ -302,7 +320,7 @@ int main(int argc, char** argv)
         {
             std::cerr << "[sim] Goal reached at t=" << sim_t + p.dt
                       << "s (step " << step + 1 << ")\n";
-            // break;
+            break;
         }
 
         // ── (b) Stuck detection ────────────────────────────────────────────────
