@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <functional>
 
 namespace mpc
 {
@@ -24,7 +25,25 @@ void MPCController::reset()
     projector_.reset();
     u_prev_ = {0.0, 0.0};
     has_prev_ref_ = false;
+    path_hash_ = 0;
     debug_info_ = DebugInfo{};
+}
+
+// ── Path hash ─────────────────────────────────────────────────────────────────
+
+size_t MPCController::hashPath(const Path& path)
+{
+    // FNV-1a-inspired mix over all waypoint coordinates.
+    // Fast and collision-resistant enough for detecting path identity changes.
+    size_t h = std::hash<size_t>{}(path.size());
+    for (const auto& pt : path.pts)
+    {
+        h ^=
+            std::hash<double>{}(pt.pos.x()) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^=
+            std::hash<double>{}(pt.pos.y()) + 0x9e3779b9u + (h << 6) + (h >> 2);
+    }
+    return h;
 }
 
 // ── Main control cycle ────────────────────────────────────────────────────────
@@ -40,22 +59,24 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── A. Trust measured state; predict forward by one dt ────────────
     const State x_pred = latencyCompensate(x_measured);
 
-    // ── C1. Projection — forward-only with hysteresis ─────────────────
-    if (!has_prev_ref_)
+    // ── C1. Path change detection (hash-based) ────────────────────────
+    //
+    // Compare the full path geometry each cycle.  On any change we reset
+    // the projector so segment tracking restarts from 0 via bisector
+    // traversal.  This is more reliable than the previous jump-distance
+    // heuristic, which could miss in-place path modifications and trigger
+    // spuriously on normal path progress.
+    //
+    // v_cur (= u_prev_.v) is robot state and is intentionally preserved
+    // across path changes so the velocity profile seeds from a realistic
+    // initial speed.
+    const size_t new_hash = hashPath(path);
+    const bool path_changed = !has_prev_ref_ || (new_hash != path_hash_);
+    if (path_changed)
     {
         projector_.reset();
     }
-    else
-    {
-        Projector tmp_proj;
-        tmp_proj.look_ahead = path.size();
-        const ProjectionResult new_p = tmp_proj.project(x_pred, path);
-        const double jump = (new_p.proj - ref_prev_.proj_pts[0]).norm();
-        if (jump > params_.path_reset_threshold)
-        {
-            projector_.reset();
-        }
-    }
+    path_hash_ = new_hash;
 
     const ProjectionResult proj = projector_.project(x_pred, path);
 
@@ -73,15 +94,22 @@ Control MPCController::update(const State& x_measured, const Path& path)
         params_.v_min_scale,
         1.0);
 
-    // ── C2. Generate reference + apply velocity reduction ─────────────
-    Reference new_ref = ref_gen_.generate(path, proj);
+    // ── C2. Generate reference, seeded with the robot's current speed ──
+    //
+    // Passing u_prev_.v as v_cur seeds the look-ahead braking integrator
+    // at the actual robot speed, giving a kinematically-continuous profile.
+    Reference new_ref = ref_gen_.generate(path, proj, u_prev_.v);
     for (double& v : new_ref.v_profile)
     {
         v *= v_scale;
     }
 
-    // ── C2. Blend with previous reference to smooth path updates ──────
-    const Reference ref = has_prev_ref_
+    // ── C2. Blend with previous reference to smooth same-path updates ──
+    //
+    // Blending is suppressed when the path has changed: applying the old
+    // reference geometry to new corridor normals produces incorrect QP
+    // constraints, so the new reference is used as-is for that cycle.
+    const Reference ref = (has_prev_ref_ && !path_changed)
                               ? blend(new_ref, ref_prev_, params_.blend_alpha)
                               : new_ref;
 
@@ -117,12 +145,48 @@ Control MPCController::update(const State& x_measured, const Path& path)
     const int N = params_.N;
     std::vector<State> lin_traj(N);
     std::vector<Control> lin_ctrl(N);
+    const std::vector<State>& prev_pred = debug_info_.pred_traj;
     for (int k = 0; k < N; ++k)
     {
-        lin_traj[k] = ref.x_ref[k];
+        lin_traj[k] =
+            (prev_pred.size() > (size_t)k) ? prev_pred[k] : ref.x_ref[k];
         lin_ctrl[k] = {ref.v_profile[k], 0.0};
     }
     const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
+
+    const double recovery_ratio = std::clamp(
+        (std::abs(cte_raw) - params_.d_hard) / params_.d_hard,
+        0.0,
+        1.0);  // 0 = inside corridor, 1 = at 2×d_hard or beyond
+
+    if (recovery_ratio > 0.0)
+    {
+        // Direction from robot toward the nearest path point
+        const Eigen::Vector2d to_path =
+            (proj.proj - Eigen::Vector2d(x_pred.x, x_pred.y)).normalized();
+        const double theta_toward_path = std::atan2(to_path.y(), to_path.x());
+
+        for (int k = 0; k < std::min(params_.N / 2, params_.N); ++k)
+        {
+            // Blend weight decays with horizon step (early steps get more recovery bias)
+            const double step_weight =
+                std::max(0.0, 1.0 - (double)k / (params_.N / 2));
+            const double w = recovery_ratio * step_weight;
+
+            const double th_path = new_ref.x_ref[k].theta;
+            // Interpolate: w=1 → face path, w=0 → path tangent
+            double d_th = theta_toward_path - th_path;
+            while (d_th > M_PI)
+            {
+                d_th -= 2.0 * M_PI;
+            }
+            while (d_th < -M_PI)
+            {
+                d_th += 2.0 * M_PI;
+            }
+            new_ref.x_ref[k].theta = th_path + w * d_th;
+        }
+    }
 
     // ── Build and solve QP ────────────────────────────────────────────
     const QP qp = qp_builder_.build(x_pred, u_prev_, ref, model, ctx);
@@ -237,7 +301,9 @@ Reference MPCController::blend(
         }
         out.x_ref[k].theta = th_old + alpha * d_th;
 
-        // Corridor geometry always from the new path
+        // Corridor geometry always from the new path (never blend normals:
+        // mixing normals from two different path geometries would corrupt the
+        // QP half-space constraints).
         out.seg_normals[k] = r_new.seg_normals[k];
         out.proj_pts[k] = r_new.proj_pts[k];
 

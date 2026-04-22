@@ -11,6 +11,7 @@
 
 #include <Eigen/Dense>
 #include <vector>
+#include <cstddef>
 
 namespace mpc
 {
@@ -86,8 +87,10 @@ struct DebugInfo
 ///
 ///   A)  Always trust measured state (latency compensation only).
 ///   B)  Persistent OSQP + warm start (delegated to Solver).
-///   C)  Projection reset on large path changes.
-///       Reference blending across path updates.
+///   C)  Hash-based path change detection.
+///       Projection reset when path identity changes.
+///       Reference blending suppressed on path change (new geometry applied
+///       immediately; blending only smooths same-path numerical transitions).
 ///       Goal clamping.
 ///   D)  Adaptive corridor width.
 ///       Velocity reduction under cross-track error.
@@ -113,7 +116,8 @@ public:
     Control update(const State& x_measured, const Path& path);
 
     /// Hard reset: clears all internal state (warm start, blended reference,
-    /// previous control).  Call after large teleportations or emergency stops.
+    /// previous control, path hash).  Call after large teleportations or
+    /// emergency stops.
     void reset();
 
     /// Read-only access to the debug snapshot from the most recent update().
@@ -132,6 +136,12 @@ private:
     Control u_prev_{0.0, 0.0};
     Reference ref_prev_;
     bool has_prev_ref_{false};
+
+    /// Hash of the path geometry seen in the previous update() call.
+    /// A change in this value triggers a projector reset and suppresses
+    /// reference blending for that cycle so stale geometry is not mixed
+    /// into the new reference.
+    size_t path_hash_{0};
 
     // ── Debug snapshot (updated every cycle) ──────────────────────────
     DebugInfo debug_info_;
@@ -158,6 +168,11 @@ private:
         const Reference& r_new,
         const Reference& r_old,
         double alpha) const;
+
+    /// Compute a lightweight hash of a path's geometry.
+    /// Changes whenever any waypoint coordinate changes or the number of
+    /// points changes.
+    static size_t hashPath(const Path& path);
 };
 
 }  // namespace mpc

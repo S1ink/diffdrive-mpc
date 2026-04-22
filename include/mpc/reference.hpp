@@ -28,13 +28,22 @@ public:
     explicit ReferenceGenerator(const MPCParams& p) : params_(p) {}
 
     /// Build a horizon-length reference starting from the current projection.
-    Reference generate(const Path& path, const ProjectionResult& proj) const;
+    ///
+    /// @param path   Current path polyline.
+    /// @param proj   Projection result for the robot's current (latency-
+    ///               compensated) position.
+    /// @param v_cur  Current robot forward speed [m/s].  Passed as the seed
+    ///               for the forward velocity integration so the profile is
+    ///               continuous across MPC cycles.  Default 0 (cold start).
+    Reference generate(
+        const Path& path,
+        const ProjectionResult& proj,
+        double v_cur = 0.0) const;
 
 private:
     MPCParams params_;
 
-    /// Approximate curvature [1/m] at the transition leaving segment `idx`.
-    double curvatureAt(const Path& path, size_t idx) const;
+    // ── Internal helpers ──────────────────────────────────────────────
 
     /// Arc length remaining from (idx, t) to the end of the path [m].
     double distToEnd(const Path& path, size_t idx, double t) const;
