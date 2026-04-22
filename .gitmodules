@@ -1,0 +1,6 @@
+[submodule "OSQP"]
+	path = OSQP
+	url = https://github.com/osqp/OSQP
+[submodule "osqp"]
+	path = osqp
+	url = https://github.com/osqp/OSQP
