@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cmath>
 #include <functional>
+#include <iostream>
 
 namespace mpc
 {
@@ -20,6 +21,29 @@ MPCController::MPCController(const MPCParams& p) :
     qp_builder_(p)
 {
     projector_.seg_advance_t = p.seg_advance_t;
+
+    // Ensure the horizon covers the complete maximum-braking distance.
+    //
+    // The reference generator's backward-pass velocity profile guarantees
+    // that v_profile[k] already accounts for all upcoming speed limits, but
+    // only for events that lie within the horizon.  If N < minBrakingSteps()
+    // a corner whose braking would need to begin BEFORE the first horizon
+    // step is invisible to the planner: the robot would enter it too fast.
+    //
+    // We raise N here (never lower it) so that no matter what the caller set
+    // in MPCParams, the solver always looks far enough ahead.
+    const int n_brake = params_.minBrakingSteps();
+    if (params_.N < n_brake)
+    {
+        std::cerr << "[MPCController] N=" << params_.N
+                  << " is smaller than minBrakingSteps()=" << n_brake
+                  << "; raising N to " << n_brake << ".\n";
+        params_.N = n_brake;
+        // Propagate the updated N into the sub-components that hold their own
+        // copy of MPCParams.
+        ref_gen_ = ReferenceGenerator(params_);
+        qp_builder_ = QPBuilder(params_);
+    }
 }
 
 void MPCController::reset()
@@ -308,7 +332,6 @@ Control MPCController::update(const State& x_measured, const Path& path)
     debug_info_.solve_ms = std::chrono::duration<double, std::milli>(
                                std::chrono::high_resolution_clock::now() - t0)
                                .count();
-    ;
 
     // ── G. Failure fallback ────────────────────────────────────────────
     if (!ok)

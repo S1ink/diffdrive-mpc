@@ -11,12 +11,25 @@ namespace mpc
 struct MPCParams
 {
     // ── Horizon ──────────────────────────────────────────────────────
-    int N = 15;        // prediction horizon (steps)
+    //
+    // N is the number of prediction steps.  MPCController enforces at
+    // construction time that N >= minBrakingSteps() so that the full
+    // maximum-braking distance (v_max → 0 under a_max) is always within
+    // the horizon.  This guarantees that every upcoming corner speed
+    // limit is visible to the look-ahead braking integrator in the
+    // reference generator.
+    //
+    // With the defaults (v_max=1.5, a_max=1.0, dt=0.05) minBrakingSteps()
+    // returns 30, so the effective N is raised from the nominal 15 to 30.
+    // Override N here if you want a longer horizon; it will never be
+    // silently shortened below minBrakingSteps().
+    int N =
+        15;  // prediction horizon (steps) — raised to minBrakingSteps() if smaller
     double dt = 0.05;  // timestep [s]  → 20 Hz
 
     // ── Velocity limits ───────────────────────────────────────────────
-    double v_max = 1.5;      // max forward speed   [m/s]
-    double v_min = -0.1;      // min forward speed   [m/s]
+    double v_max = 1.2;      // max forward speed   [m/s]
+    double v_min = -0.1;     // min forward speed   [m/s]
     double omega_max = 1.2;  // max angular speed   [rad/s]
 
     // ── Acceleration limits ───────────────────────────────────────────
@@ -30,10 +43,10 @@ struct MPCParams
     // ── Corridor / soft constraint ────────────────────────────────────
     double d_hard = 0.05;  // hard corridor half-width [m]
     //   = path_tolerance + noise_margin  (e.g. 5 cm + 3 cm)
-    double w_slack = 4000.0;  // quadratic penalty on corridor slack ε_k
+    double w_slack = 100.0;  // quadratic penalty on corridor slack ε_k
 
     // ── Tracking cost ─────────────────────────────────────────────────
-    double Q_xy = 40.0;             // position weight (intermediate steps)
+    double Q_xy = 20.0;             // position weight (intermediate steps)
     double Q_theta = 2.0;           // heading weight  (intermediate steps)
     double Q_xy_terminal = 80.0;    // elevated position weight at step N
     double Q_theta_terminal = 8.0;  // elevated heading weight  at step N
@@ -137,6 +150,23 @@ struct MPCParams
     // ── Solver failure fallback ───────────────────────────────────────────
     // On OSQP failure, return u_prev scaled by this factor.
     double fallback_decay = 0.8;
+
+    // ── Derived / validation ──────────────────────────────────────────────
+
+    /// Minimum prediction horizon steps required to observe the complete
+    /// braking event from v_max down to rest under maximum deceleration.
+    ///
+    /// Formula:  ceil( (v_max − max(v_min, 0)) / (a_max · dt) )
+    ///
+    /// MPCController enforces N >= minBrakingSteps() in its constructor so
+    /// that the look-ahead braking integrator inside ReferenceGenerator can
+    /// always "see" every upcoming velocity limit before the robot needs to
+    /// start decelerating for it.
+    int minBrakingSteps() const
+    {
+        const double dv = v_max - std::max(v_min, 0.0);
+        return static_cast<int>(std::ceil(dv / (a_max * dt)));
+    }
 };
 
 }  // namespace mpc

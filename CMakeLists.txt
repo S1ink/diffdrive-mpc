@@ -47,7 +47,14 @@ target_link_libraries(mpc_core
 )
 
 # ── Standalone simulation executable ─────────────────────────────────────────
-add_executable(sim_test test/sim_main.cpp)
+# sim_utils.cpp contains all testing utilities (noise, stuck detection,
+# logging) and is compiled only into the sim executable — not into mpc_core —
+# so the core library stays free of test-only dependencies.
+add_executable(sim_test
+    test/sim_main.cpp
+    test/sim_utils.cpp
+)
+target_include_directories(sim_test PRIVATE test)
 target_link_libraries(sim_test PRIVATE mpc_core)
 
 # ─────────────────────────────────────────────────────────────────────────────

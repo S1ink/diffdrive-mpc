@@ -7,15 +7,6 @@
 namespace mpc
 {
 
-// ── Internal types ────────────────────────────────────────────────────────────
-
-/// A speed constraint at a specific arc-length position along the path.
-struct VelocityEvent
-{
-    double s;      // arc-length position from path start [m]
-    double v_lim;  // maximum speed at this point [m/s]
-};
-
 // ── File-scope helpers ────────────────────────────────────────────────────────
 
 /// Compute cumulative arc lengths along the path.
@@ -32,34 +23,58 @@ static std::vector<double> cumulativeArcs(const Path& path)
     return cum;
 }
 
-/// Find constraint events for the velocity profile:
-///   • End-of-path stop:   (total_arc, 0)
-///   • Each junction i where the heading change exceeds ~3°:
-///         speed limit = ω_max × avg_segment_length / Δθ
-///         (derived from ω = v·Δθ/ds_avg ≤ ω_max)
+/// Build a path-wide velocity profile using backward-pass deceleration
+/// smoothing, matching the approach from control.py::_build_velocity_profile().
 ///
-/// Only junctions ahead of s0 are included.
-static std::vector<VelocityEvent> buildConstraintEvents(
+/// Algorithm
+/// ---------
+///  1. Set v_lim = v_max everywhere.
+///  2. Clamp v_lim to 0 at the path end (terminal stop).
+///  3. At each interior waypoint junction, apply the yaw-rate-based corner
+///     speed limit:  v ≤ omega_max · ds_avg / angle   (derived from ω=v·κ).
+///     Junctions with a heading change < ~3° are skipped as negligible.
+///  4. Run three backward-pass sweeps to propagate deceleration constraints:
+///         v[i] = min(v[i],  sqrt(v[i+1]² + 2·a_max·ds[i]))
+///     Three iterations are enough to resolve cascading constraints (e.g. two
+///     tight corners in quick succession where the second corner tightens the
+///     entry speed required at the first).
+///
+/// The result guarantees that at every waypoint the stored speed is the
+/// maximum at which the robot CAN travel and still brake to every future
+/// speed limit in time under constant deceleration a_max.
+///
+/// @param path       Path polyline.
+/// @param cum        Cumulative arc lengths (length path.size()), from
+///                   cumulativeArcs().
+/// @param v_max      Maximum allowable forward speed [m/s].
+/// @param omega_max  Maximum angular speed used for corner limits [rad/s].
+/// @param a_max      Maximum deceleration magnitude [m/s²].
+/// @param out_v      Output: v_lim at each waypoint (length path.size()).
+static void buildVelocityProfile(
     const Path& path,
     const std::vector<double>& cum,
-    double s0,
     double v_max,
-    double omega_max)
+    double omega_max,
+    double a_max,
+    std::vector<double>& out_v)
 {
-    std::vector<VelocityEvent> events;
     const int n = (int)path.size();
+    out_v.assign(n, v_max);
 
-    // Always include an end-of-path stop.
-    events.push_back({cum.back(), 0.0});
+    // ── Step 2: Terminal stop ─────────────────────────────────────────
+    out_v.back() = 0.0;
 
+    // ── Step 3: Corner speed limits ───────────────────────────────────
+    //
+    // At each interior junction i, the robot's angular velocity is
+    //   ω ≈ v · Δθ / ds_avg
+    // so ω ≤ omega_max  ⟹  v ≤ omega_max · ds_avg / Δθ.
+    //
+    // The average of the incoming and outgoing segment lengths is used as
+    // the arc estimate ds_avg, which gives a more stable estimate than
+    // either segment alone near junctions where one segment may be very short.
     for (int i = 1; i < n - 1; ++i)
     {
-        const double s_j = cum[i];
-        if (s_j <= s0 + 1e-6)
-        {
-            continue;  // behind or at current position
-        }
-
         const Eigen::Vector2d d_in =
             (path.pts[i].pos - path.pts[i - 1].pos).normalized();
         const Eigen::Vector2d d_out =
@@ -70,21 +85,75 @@ static std::vector<VelocityEvent> buildConstraintEvents(
 
         if (angle < 0.05)
         {
-            continue;  // < ~3°, negligible curvature
+            continue;  // < ~3°: negligible curvature, no limit
         }
 
-        // Average of incoming and outgoing segment lengths as arc estimate.
         const double l_in = (path.pts[i].pos - path.pts[i - 1].pos).norm();
         const double l_out = (path.pts[i + 1].pos - path.pts[i].pos).norm();
         const double ds_avg = 0.5 * (l_in + l_out);
 
-        const double v_lim =
+        const double v_corner =
             std::clamp(omega_max * ds_avg / (angle + 1e-9), 0.0, v_max);
-
-        events.push_back({s_j, v_lim});
+        out_v[i] = std::min(out_v[i], v_corner);
     }
 
-    return events;
+    // ── Step 4: Backward-pass deceleration smoothing (3 sweeps) ──────
+    //
+    // Each sweep propagates the constraint  v[i] ≤ sqrt(v[i+1]² + 2·a·ds)
+    // backward through the path.  One sweep is exact for isolated events;
+    // three sweeps ensure convergence when multiple tight turns interact
+    // (identical to control.py's loop-of-3 backward pass).
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        for (int i = n - 2; i >= 0; --i)
+        {
+            const double seg_len =
+                (path.pts[i + 1].pos - path.pts[i].pos).norm();
+            const double v_reach =
+                std::sqrt(out_v[i + 1] * out_v[i + 1] + 2.0 * a_max * seg_len);
+            if (v_reach < out_v[i])
+            {
+                out_v[i] = v_reach;
+            }
+        }
+    }
+}
+
+/// Interpolate the precomputed velocity profile at arc position s_abs.
+///
+/// @param cum    Cumulative arc lengths at each waypoint (sorted, ascending).
+/// @param v_lim  Speed limit at each waypoint (parallel to cum).
+/// @param s_abs  Query arc position from path start.
+/// @param v_max  Fallback cap — returned when s_abs is before the first point.
+static double interpVelocityProfile(
+    const std::vector<double>& cum,
+    const std::vector<double>& v_lim,
+    double s_abs,
+    double v_max)
+{
+    if (s_abs >= cum.back())
+    {
+        return 0.0;  // beyond path end → must have stopped
+    }
+
+    // upper_bound gives the first element > s_abs
+    const auto it = std::upper_bound(cum.begin(), cum.end(), s_abs);
+    const int idx =
+        (int)(it - cum.begin());  // first index with cum[idx] > s_abs
+
+    if (idx == 0)
+    {
+        return v_lim[0];  // before first waypoint
+    }
+
+    // Linear interpolation between waypoints [idx-1, idx]
+    const double ds = cum[idx] - cum[idx - 1];
+    if (ds < 1e-12)
+    {
+        return v_lim[idx];
+    }
+    const double t = (s_abs - cum[idx - 1]) / ds;
+    return v_lim[idx - 1] * (1.0 - t) + v_lim[idx] * t;
 }
 
 /// Find the index of the segment whose arc-length interval contains s_abs.
@@ -170,49 +239,50 @@ Reference ReferenceGenerator::generate(
         return r;
     }
 
-    // ── 3. Build constraint events ────────────────────────────────────
-    const std::vector<VelocityEvent> events =
-        buildConstraintEvents(path, cum, s0, params_.v_max, params_.omega_max);
+    // ── 3. Build backward-pass velocity profile over the whole path ───
+    //
+    // This precomputes, at every waypoint, the maximum speed from which the
+    // robot can still brake to every upcoming corner and the path end in time.
+    // The profile encodes all future speed constraints so that the forward
+    // integration below can simply clamp against it without needing a per-step
+    // scan over individual constraint events.
+    //
+    // This is mathematically equivalent to (and intentionally mirrors) the
+    // backward-pass approach in control.py::_build_velocity_profile().
+    std::vector<double> path_v_lim;
+    buildVelocityProfile(
+        path,
+        cum,
+        params_.v_max,
+        params_.omega_max,
+        params_.a_max,
+        path_v_lim);
 
-    // ── 4. Forward velocity integration with look-ahead braking ──────
+    // ── 4. Forward velocity integration ──────────────────────────────
     //
-    // At each horizon step k the tightest allowable speed NOW is the minimum
-    // over all upcoming events of:
+    // At each horizon step k:
+    //  a) Look up the precomputed speed cap at the robot's current arc
+    //     position (s0 + arc_at[k]).  Because the profile was built with a
+    //     backward pass, this cap is the tightest constraint over ALL future
+    //     events — not just the nearest — and accounts for cascading braking
+    //     requirements between closely spaced corners.
+    //  b) Clamp the velocity change to ±a_max·dt so the profile is
+    //     kinematically continuous across MPC cycles.
     //
-    //     v_cap = sqrt( v_ev² + 2·a_max·(s_ev − s_current) )
-    //
-    // This is the speed from which we can brake to v_ev by the time we
-    // reach s_ev under constant deceleration a_max.  We then advance the
-    // velocity within ± a_max·dt.
-    //
-    // arc_at[k] = cumulative arc traversed before step k
-    //             (= distance from s0 to x_ref[k]).
+    // arc_at[k] = cumulative arc traversed by the velocity profile before
+    //             step k (= distance from s0 to x_ref[k]).
     std::vector<double> arc_at(N + 1, 0.0);
     {
         double v = std::clamp(v_cur, 0.0, params_.v_max);
 
         for (int k = 0; k < N; ++k)
         {
-            // Look-ahead: tightest speed cap over all future events.
-            double v_cap = params_.v_max;
-            for (const auto& ev : events)
-            {
-                // Remaining arc from current forward-integration position
-                // to this event.
-                const double ds = (ev.s - s0) - arc_at[k];
-                if (ds >= 0.0)
-                {
-                    v_cap = std::min(
-                        v_cap,
-                        std::sqrt(
-                            std::max(
-                                0.0,
-                                ev.v_lim * ev.v_lim +
-                                    2.0 * params_.a_max * ds)));
-                }
-            }
+            // Speed cap from the precomputed backward-pass profile.
+            const double s_k = s0 + arc_at[k];
+            const double v_cap =
+                interpVelocityProfile(cum, path_v_lim, s_k, params_.v_max);
 
-            // Advance velocity within acceleration limits.
+            // Advance velocity within ±a_max·dt (kinematic continuity).
             v = std::clamp(
                 v_cap,
                 v - params_.a_max * dt,
@@ -223,8 +293,8 @@ Reference ReferenceGenerator::generate(
             arc_at[k + 1] = arc_at[k] + v * dt;
         }
 
-        // Terminal slot: repeat last velocity (consumed by lineariser, not
-        // used for advancing arc).
+        // Terminal slot: repeat last velocity (consumed by the lineariser
+        // for the final step but not used for arc advancement).
         r.v_profile[N] = (N > 0) ? r.v_profile[N - 1] : 0.0;
     }
 
