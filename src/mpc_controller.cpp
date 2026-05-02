@@ -170,8 +170,15 @@ Control MPCController::update(const State& x_measured, const Path& path)
         const double v_min_st = params_.stanley_v_min;
         for (int kk = 0; kk <= params_.N; ++kk)
         {
+            // Taper the correction exponentially so that near-horizon steps
+            // get full recovery guidance while far-horizon steps recover pure
+            // path-tangent headings.  Without this, a fixed CTE correction
+            // applied to steps that span a corner distorts the turn geometry:
+            // e.g. a 90° corner reference becomes 32° after a -58° correction,
+            // causing the optimizer to plan a reverse-turn instead of the turn.
+            const double taper = std::exp(-0.5 * double(kk));
             const double v_k = std::max(new_ref.v_profile[kk], v_min_st);
-            const double correction = std::atan2(-k * cte_raw, v_k);
+            const double correction = taper * std::atan2(-k * cte_raw, v_k);
             double& th = new_ref.x_ref[kk].theta;
             th += correction;
             // Normalise to [−π, π]

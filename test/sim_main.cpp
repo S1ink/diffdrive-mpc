@@ -131,10 +131,10 @@ int main(int argc, char** argv)
         const Control u = ctrl.update(x, path);
 
         // Optionally prune traversed path segments (uncomment to enable):
-        const size_t pruned = ctrl.pruneTraversedSegments(path);
-        if (pruned > 0)
-            std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
-                      << " segment(s), path now " << path.size() << " pts\n";
+        // const size_t pruned = ctrl.pruneTraversedSegments(path);
+        // if (pruned > 0)
+        //     std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
+        //               << " segment(s), path now " << path.size() << " pts\n";
 
         const DebugInfo& dbg = ctrl.debugInfo();
         logger.logFrame(sim_t, x, u, path, dbg);

@@ -35,8 +35,13 @@ static std::vector<double> cumulativeArcs(const Path& path)
 /// Find constraint events for the velocity profile:
 ///   • End-of-path stop:   (total_arc, 0)
 ///   • Each junction i where the heading change exceeds ~3°:
-///         speed limit = ω_max × avg_segment_length / Δθ
-///         (derived from ω = v·Δθ/ds_avg ≤ ω_max)
+///         Geometric formula: v = omega_max * d_hard / (1 − cos(angle/2))
+///         This is the maximum speed at which a robot with ω ≤ omega_max can
+///         navigate a corner of the given bend angle while staying within
+///         d_hard of the path apex (arc radius r = d_hard/(1-cos(θ/2)),
+///         v = ω_max · r).  Unlike the segment-length heuristic, this formula
+///         correctly tightens the limit as the bend sharpens and as d_hard
+///         narrows — preventing corner cutting at the source.
 ///
 /// Only junctions ahead of s0 are included.
 static std::vector<VelocityEvent> buildConstraintEvents(
@@ -44,7 +49,8 @@ static std::vector<VelocityEvent> buildConstraintEvents(
     const std::vector<double>& cum,
     double s0,
     double v_max,
-    double omega_max)
+    double omega_max,
+    double d_hard)
 {
     std::vector<VelocityEvent> events;
     const int n = (int)path.size();
@@ -73,13 +79,13 @@ static std::vector<VelocityEvent> buildConstraintEvents(
             continue;  // < ~3°, negligible curvature
         }
 
-        // Average of incoming and outgoing segment lengths as arc estimate.
-        const double l_in = (path.pts[i].pos - path.pts[i - 1].pos).norm();
-        const double l_out = (path.pts[i + 1].pos - path.pts[i].pos).norm();
-        const double ds_avg = 0.5 * (l_in + l_out);
-
-        const double v_lim =
-            std::clamp(omega_max * ds_avg / (angle + 1e-9), 0.0, v_max);
+        // Maximum speed to navigate this bend within ±d_hard of the apex.
+        // r = d_hard / (1 − cos(angle/2)),  v = omega_max · r
+        // For very small angles (1−cos ≈ 0) this returns v_max (no constraint).
+        const double one_minus_cos = 1.0 - std::cos(angle / 2.0);
+        const double v_lim = (one_minus_cos > 1e-6)
+            ? std::clamp(omega_max * d_hard / one_minus_cos, 0.0, v_max)
+            : v_max;
 
         events.push_back({s_j, v_lim});
     }
@@ -172,7 +178,7 @@ Reference ReferenceGenerator::generate(
 
     // ── 3. Build constraint events ────────────────────────────────────
     const std::vector<VelocityEvent> events =
-        buildConstraintEvents(path, cum, s0, params_.v_max, params_.omega_max);
+        buildConstraintEvents(path, cum, s0, params_.v_max, params_.omega_max, params_.d_hard);
 
     // ── 4. Forward velocity integration with look-ahead braking ──────
     //

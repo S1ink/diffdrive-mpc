@@ -112,9 +112,12 @@ QP QPBuilder::build(
 
     // ── 1b. Control effort + smoothness ──────────────────────────────
     //
-    // Per-step cost:  (R + R_rate)·u_k²  −  2·R_rate·u_k·u_{k-1}
+    // Per-step cost:
+    //   R_v     · (v_k − v_ref_k)²   — track reference speed profile
+    //   R_rate  · (v_k − v_{k-1})²   — suppress jerk
     //
-    // k = 0:   u_{-1} = u_prev (constant).  Cross-term enters q only.
+    // Expanding (v_k − v_ref)²: P(ii) += 2·R_v (same diagonal), q(i) -= 2·R_v·v_ref.
+    // k = 0:   u_{-1} = u_prev (constant).  Cross-terms enter q only.
     // k > 0:   u_{k-1} is a variable.       Off-diagonal P entry (upper-tri).
     for (int k = 0; k < N; ++k)
     {
@@ -125,6 +128,9 @@ QP QPBuilder::build(
             iu + 1,
             iu + 1,
             2.0 * (params_.R_omega + params_.R_rate_omega));
+
+        // Velocity tracking: shift minimum from 0 to v_profile[k].
+        qp.q(iu + 0) -= 2.0 * params_.R_v * ref.v_profile[k];
 
         if (k == 0)
         {

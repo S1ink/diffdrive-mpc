@@ -32,13 +32,13 @@ struct MPCParams
     double omega_max = 1.2;  // max angular speed   [rad/s]
 
     // ── Acceleration limits ───────────────────────────────────────────
-    double a_max = 5.0;       // linear accel bound  [m/s²]
-    double alpha_max = 10.0;  // angular accel bound [rad/s²]
+    double a_max = 1.0;       // linear accel bound  [m/s²]
+    double alpha_max = 2.0;  // angular accel bound [rad/s²]
 
     // ── Corridor / soft constraint ────────────────────────────────────
     double d_hard = 0.05;  // hard corridor half-width [m]
     //   = path_tolerance + noise_margin  (e.g. 5 cm + 3 cm)
-    double w_slack = 100.0;  // quadratic penalty on corridor slack ε_k
+    double w_slack = 1000.0;  // quadratic penalty on corridor slack ε_k
 
     // ── Tracking cost ─────────────────────────────────────────────────
     double Q_xy = 20.0;             // position weight (intermediate steps)
@@ -83,7 +83,7 @@ struct MPCParams
     // ── Velocity reduction under error ────────────────────────────────
     // v_ref_k *= clamp(1 − v_error_gain * |cte|,  v_min_scale, 1)
     double v_error_gain = 3.0;
-    double v_min_scale = 1.0;  // 0 allows full stop for point-turn recovery
+    double v_min_scale = 0.0;  // 0 allows full stop for point-turn recovery
 
     // ── Reference blending ────────────────────────────────────────────
     // Smooths abrupt same-path numerical jitter: ref = α·new + (1−α)·old.
