@@ -90,23 +90,33 @@ QP QPBuilder::build(
         const int ix = idx_x(k);
         const bool term = (k == N);
 
-        // Exponential horizon decay: weights shrink as k grows so that far-
-        // horizon polyline references do not over-constrain corner geometry.
-        // Terminal weights are exempt — they are intentionally elevated to
-        // act as a value-function approximation and must stay strong.
-        const double decay = term ? 1.0 : std::pow(params_.q_xy_decay, k);
+        const double decay    = term ? 1.0 : std::pow(params_.q_cte_decay, k);
         const double decay_th = term ? 1.0 : std::pow(params_.q_theta_decay, k);
 
-        const double Qxy = term ? params_.Q_xy_terminal : params_.Q_xy * decay;
-        const double Qth =
-            term ? ctx.Q_theta_terminal_eff : ctx.Q_theta_eff * decay_th;
+        const double Qcte  = term ? params_.Q_cte_terminal      : params_.Q_cte      * decay;
+        const double Qprog = term ? params_.Q_progress_terminal : params_.Q_progress * decay;
+        const double Qth   = term ? ctx.Q_theta_terminal_eff    : ctx.Q_theta_eff    * decay_th;
 
-        Pt.emplace_back(ix + 0, ix + 0, 2.0 * Qxy);
-        Pt.emplace_back(ix + 1, ix + 1, 2.0 * Qxy);
+        // Path-aligned position cost: decompose into CTE (perpendicular) and
+        // progress (along-track) so the optimizer minimises lateral deviation
+        // without being pulled toward kinematically incorrect arc waypoints.
+        const Eigen::Vector2d& n  = ref.seg_normals[k];  // unit normal
+        const Eigen::Vector2d  d(-n.y(), n.x());          // unit tangent
+        const Eigen::Vector2d& p0 = ref.proj_pts[k];      // anchor on segment
+
+        // P += 2*Qcte*(n*n^T) + 2*Qprog*(d*d^T)   [upper-triangular, col > row OK]
+        Pt.emplace_back(ix + 0, ix + 0, 2.0 * (Qcte * n.x()*n.x() + Qprog * d.x()*d.x()));
+        Pt.emplace_back(ix + 0, ix + 1, 2.0 * (Qcte * n.x()*n.y() + Qprog * d.x()*d.y()));
+        Pt.emplace_back(ix + 1, ix + 1, 2.0 * (Qcte * n.y()*n.y() + Qprog * d.y()*d.y()));
         Pt.emplace_back(ix + 2, ix + 2, 2.0 * Qth);
 
-        qp.q(ix + 0) -= 2.0 * Qxy * ref.x_ref[k].x;
-        qp.q(ix + 1) -= 2.0 * Qxy * ref.x_ref[k].y;
+        // CTE anchor: physical proj_pts[k] — correct lateral corridor behaviour.
+        // Progress anchor: arc-lookahead x_ref[k] — projects past corners early,
+        // giving an implicit turn signal before the bisector physically transitions.
+        const double c_cte  = n.dot(p0);
+        const double c_prog = d.x() * ref.x_ref[k].x + d.y() * ref.x_ref[k].y;
+        qp.q(ix + 0) -= 2.0 * (Qcte * c_cte * n.x() + Qprog * c_prog * d.x());
+        qp.q(ix + 1) -= 2.0 * (Qcte * c_cte * n.y() + Qprog * c_prog * d.y());
         qp.q(ix + 2) -= 2.0 * Qth * ref.x_ref[k].theta;
     }
 
@@ -214,7 +224,7 @@ QP QPBuilder::build(
 
         At.emplace_back(row + 0, uk + 0, 1.0);
         qp.l(row + 0) = params_.v_min;
-        qp.u(row + 0) = params_.v_max;
+        qp.u(row + 0) = ref.v_profile[k];  // braking profile is a hard upper bound
 
         At.emplace_back(row + 1, uk + 1, 1.0);
         qp.l(row + 1) = -params_.omega_max;

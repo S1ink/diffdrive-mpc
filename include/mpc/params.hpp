@@ -32,7 +32,7 @@ struct MPCParams
     double omega_max = 1.2;  // max angular speed   [rad/s]
 
     // ── Acceleration limits ───────────────────────────────────────────
-    double a_max = 1.0;       // linear accel bound  [m/s²]
+    double a_max = 1.0;      // linear accel bound  [m/s²]
     double alpha_max = 2.0;  // angular accel bound [rad/s²]
 
     // ── Corridor / soft constraint ────────────────────────────────────
@@ -41,21 +41,36 @@ struct MPCParams
     double w_slack = 1000.0;  // quadratic penalty on corridor slack ε_k
 
     // ── Tracking cost ─────────────────────────────────────────────────
-    double Q_xy = 20.0;             // position weight (intermediate steps)
-    double Q_theta = 20.0;          // heading weight  (intermediate steps)
-    double Q_xy_terminal = 80.0;    // elevated position weight at step N
-    double Q_theta_terminal = 8.0;  // elevated heading weight  at step N
+    //
+    // Position cost is decomposed into path-aligned components so that the
+    // optimizer minimises cross-track error (perpendicular to the path) and
+    // along-track progress independently, rather than tracking specific
+    // kinematic waypoints that may not respect system dynamics.
+    //
+    // Q_cte      — weight on (n^T * (x_k - proj_k))²  (perpendicular)
+    // Q_progress — weight on (d^T * (x_k - proj_k))²  (along-track)
+    //
+    // Setting Q_progress << Q_cte (e.g. 1/4) gives the optimizer freedom to
+    // choose its own arc speed while still penalising lateral deviation.
+    // Setting both equal recovers isotropic point-tracking (original behaviour).
+    double Q_cte = 20.0;           // cross-track weight  (intermediate steps)
+    double Q_progress = 5.0;       // along-track weight  (intermediate steps)
+    double Q_theta = 20.0;         // heading weight      (intermediate steps)
+    double Q_cte_terminal = 80.0;  // elevated cross-track weight at step N
+    double Q_progress_terminal =
+        20.0;                       // elevated along-track weight  at step N
+    double Q_theta_terminal = 8.0;  // elevated heading weight      at step N
 
     // ── Horizon weight decay ──────────────────────────────────────────────
     // Tracking weights are multiplied by decay^k at horizon step k, so
     // near-term reference tracking is penalised heavily and far-term lightly.
     // The corridor constraint enforces d_hard at all steps regardless.
-    // Terminal weights (Q_xy_terminal, Q_theta_terminal) are unaffected —
-    // they already encode the "value function" role and should stay strong.
+    // Terminal weights are unaffected — they already encode the "value
+    // function" role and must stay strong.
     //
-    // q_xy_decay = 1.0 disables the feature (original flat weighting).
+    // q_cte_decay = 1.0 disables the feature (original flat weighting).
     // Values around 0.90–0.95 are a good starting point.
-    double q_xy_decay = 1.0;     // per-step multiplier on Q_xy
+    double q_cte_decay = 1.0;    // per-step multiplier on Q_cte and Q_progress
     double q_theta_decay = 1.0;  // per-step multiplier on Q_theta
 
     // ── Control cost ─────────────────────────────────────────────────

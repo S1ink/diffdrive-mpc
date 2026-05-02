@@ -364,6 +364,92 @@ def make_update(frames, arts, params, pre):
     return update
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Interactive playback  (pause / scrub)
+# ─────────────────────────────────────────────────────────────────────────────
+def run_interactive(fig, frames, arts, params, pre, fps):
+    from matplotlib.widgets import Slider
+
+    n          = len(frames)
+    t_arr      = pre["t"]
+    update_fn  = make_update(frames, arts, params, pre)
+    interval   = int(1000 / fps)
+
+    # Push subplots up to make room for the slider
+    fig.subplots_adjust(bottom=0.08)
+
+    ax_sl = fig.add_axes([0.08, 0.025, 0.88, 0.022], facecolor=C["bg_ax"])
+    slider = Slider(ax_sl, '', 0, n - 1, valinit=0, valstep=1,
+                    color=C["v_line"], initcolor="none")
+    slider.label.set_color(C["tick"])      # type: ignore[attr-defined]
+    slider.valtext.set_color(C["tick"])    # type: ignore[attr-defined]
+    slider.valtext.set_fontsize(7)         # type: ignore[attr-defined]
+    for spine in ax_sl.spines.values():
+        spine.set_edgecolor(C["spine"])
+
+    fig.text(0.5, 0.003,
+             "SPACE: pause / play   ←/→: step frame   HOME/END: jump to start/end",
+             ha="center", va="bottom", fontsize=7, color=C["tick"])
+
+    state    = {"fi": 0, "playing": True}
+    _busy    = [False]
+
+    def _draw(fi):
+        if _busy[0]:
+            return
+        _busy[0] = True
+        state["fi"] = fi
+        slider.set_val(fi)
+        slider.valtext.set_text(f"t = {t_arr[fi]:.2f} s  [{fi} / {n - 1}]")  # type: ignore[attr-defined]
+        _busy[0] = False
+        update_fn(fi)
+        fig.canvas.draw_idle()
+
+    def _tick():
+        if not state["playing"]:
+            return
+        nfi = state["fi"] + 1
+        if nfi >= n:
+            state["playing"] = False
+            return
+        _draw(nfi)
+
+    def _on_slider(val):
+        if _busy[0]:
+            return
+        state["playing"] = False
+        _draw(int(round(val)))
+
+    def _on_key(event):
+        k = event.key
+        if k == " ":
+            state["playing"] = not state["playing"]
+            if state["playing"] and state["fi"] >= n - 1:
+                state["fi"] = 0
+        elif k == "left":
+            state["playing"] = False
+            _draw(max(0, state["fi"] - 1))
+        elif k == "right":
+            state["playing"] = False
+            _draw(min(n - 1, state["fi"] + 1))
+        elif k == "home":
+            state["playing"] = False
+            _draw(0)
+        elif k == "end":
+            state["playing"] = False
+            _draw(n - 1)
+
+    slider.on_changed(_on_slider)
+    fig.canvas.mpl_connect("key_press_event", _on_key)
+
+    timer = fig.canvas.new_timer(interval=interval)
+    timer.add_callback(_tick)
+    timer.start()
+
+    _draw(0)
+    plt.show()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 def _print_stats(frames, params):
@@ -464,18 +550,17 @@ def main():
                     facecolor=C["bg_ax"], edgecolor=C["spine"], labelcolor=C["tick"])
 
     arts = init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, params)
-    update_fn = make_update(frames, arts, params, pre)
-
-    ani = animation.FuncAnimation(
-        fig, update_fn, frames=len(frames),
-        interval=int(1000 / args.fps), blit=False, repeat=False)
 
     if args.save:
+        update_fn = make_update(frames, arts, params, pre)
+        ani = animation.FuncAnimation(
+            fig, update_fn, frames=len(frames),
+            interval=int(1000 / args.fps), blit=False, repeat=False)
         print(f"[plot_sim] Saving animation to {args.save} …", file=sys.stderr)
         ani.save(args.save, dpi=150)
         print("[plot_sim] Done.", file=sys.stderr)
     else:
-        plt.show()
+        run_interactive(fig, frames, arts, params, pre, args.fps)
 
 if __name__ == "__main__":
     main()

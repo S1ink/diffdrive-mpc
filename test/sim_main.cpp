@@ -36,7 +36,8 @@ int main(int argc, char** argv)
     // p.alpha_max = 2.0;
     // p.d_hard    = 0.05;
     // p.w_slack   = 5000.0;
-    // p.Q_xy      = 60.0;
+    // p.Q_cte      = 60.0;
+    // p.Q_progress = 15.0;
     // p.Q_theta   = 30.0;
     // p.blend_alpha       = 0.7;
     // p.goal_threshold    = 0.3;
@@ -131,10 +132,12 @@ int main(int argc, char** argv)
         const Control u = ctrl.update(x, path);
 
         // Optionally prune traversed path segments (uncomment to enable):
-        // const size_t pruned = ctrl.pruneTraversedSegments(path);
-        // if (pruned > 0)
-        //     std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
-        //               << " segment(s), path now " << path.size() << " pts\n";
+        const size_t pruned = ctrl.pruneTraversedSegments(path);
+        if (pruned > 0)
+        {
+            std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
+                      << " segment(s), path now " << path.size() << " pts\n";
+        }
 
         const DebugInfo& dbg = ctrl.debugInfo();
         logger.logFrame(sim_t, x, u, path, dbg);

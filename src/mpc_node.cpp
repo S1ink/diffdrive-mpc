@@ -384,9 +384,11 @@ private:
         params_.adaptive_corridor_scale = dbl("adaptive_corridor_scale", 3.0);
         params_.funnel_decay_tau = dbl("funnel_decay_tau", 10.0);
 
-        params_.Q_xy = dbl("Q_xy", 60.0);
+        params_.Q_cte = dbl("Q_cte", 60.0);
+        params_.Q_progress = dbl("Q_progress", 15.0);
         params_.Q_theta = dbl("Q_theta", 10.0);
-        params_.Q_xy_terminal = dbl("Q_xy_terminal", 60.0);
+        params_.Q_cte_terminal = dbl("Q_cte_terminal", 60.0);
+        params_.Q_progress_terminal = dbl("Q_progress_terminal", 15.0);
         params_.Q_theta_terminal = dbl("Q_theta_terminal", 100.0);
 
         params_.R_v = dbl("R_v", 5.0);
