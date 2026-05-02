@@ -377,7 +377,7 @@ private:
         params_.omega_max = dbl("omega_max", 1.5);
         params_.a_max = dbl("a_max", 1.0);
         params_.alpha_max = dbl("alpha_max", 2.0);
-        params_.v_ref = dbl("v_ref", 0.3);
+        // params_.v_ref = dbl("v_ref", 0.3);
 
         params_.d_hard = dbl("d_hard", 0.05);
         params_.w_slack = dbl("w_slack", 5000.0);
@@ -394,13 +394,13 @@ private:
         params_.R_rate_v = dbl("R_rate_v", 2.0);
         params_.R_rate_omega = dbl("R_rate_omega", 5.0);
 
-        params_.seg_advance_t = dbl("seg_advance_t", 0.7);
+        // params_.seg_advance_t = dbl("seg_advance_t", 0.7);
         params_.d_deadband = dbl("d_deadband", 0.02);
         params_.v_error_gain = dbl("v_error_gain", 3.0);
         params_.v_min_scale = dbl("v_min_scale", 0.2);
         params_.blend_alpha = dbl("blend_alpha", 0.7);
         params_.heading_scale_k = dbl("heading_scale_k", 1.0);
-        params_.path_reset_threshold = dbl("path_reset_threshold", 0.5);
+        // params_.path_reset_threshold = dbl("path_reset_threshold", 0.5);
         params_.goal_threshold = dbl("goal_threshold", 0.3);
         params_.fallback_decay = dbl("fallback_decay", 0.8);
 

@@ -151,7 +151,7 @@ void FrameLogger::logParams(const MPCParams& p, int max_steps)
 {
     std::ostringstream ss;
     ss << "{\"params\":{"
-       << "\"N\":" << p.N << ",\"dt\":" << p.dt << ",\"v_ref\":" << p.v_ref
+       << "\"N\":" << p.N << ",\"dt\":" << p.dt //<< ",\"v_ref\":" << p.v_ref
        << ",\"v_max\":" << p.v_max << ",\"omega_max\":" << p.omega_max
        << ",\"d_hard\":" << p.d_hard << ",\"max_steps\":" << max_steps << "}}";
 

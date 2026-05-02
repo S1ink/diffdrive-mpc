@@ -20,8 +20,6 @@ MPCController::MPCController(const MPCParams& p) :
     linearizer_(p.dt),
     qp_builder_(p)
 {
-    projector_.seg_advance_t = p.seg_advance_t;
-
     // Ensure the horizon covers the complete maximum-braking distance.
     //
     // The reference generator's backward-pass velocity profile guarantees
@@ -246,39 +244,39 @@ Control MPCController::update(const State& x_measured, const Path& path)
     //
     // Handles: (1) tight U-turns; (2) path updates that place the remaining
     // path entirely behind the robot (Stanley targets ~180° from heading).
-    {
-        double h_err = ref_qp.x_ref[0].theta - x_pred.theta;
-        while (h_err > M_PI)
-        {
-            h_err -= 2.0 * M_PI;
-        }
-        while (h_err < -M_PI)
-        {
-            h_err += 2.0 * M_PI;
-        }
+    // {
+    //     double h_err = ref_qp.x_ref[0].theta - x_pred.theta;
+    //     while (h_err > M_PI)
+    //     {
+    //         h_err -= 2.0 * M_PI;
+    //     }
+    //     while (h_err < -M_PI)
+    //     {
+    //         h_err += 2.0 * M_PI;
+    //     }
 
-        if (std::abs(h_err) > params_.recovery_heading_threshold)
-        {
-            const Control u_rec = {
-                0.0,
-                std::copysign(params_.omega_max, h_err)};
-            debug_info_.solver_ok = false;
-            debug_info_.solve_ms = 0.0;
-            debug_info_.cte_raw = cte_raw;
-            debug_info_.d_hard_eff = d_hard_eff;
-            debug_info_.v_scale = v_scale;
-            debug_info_.Q_theta_eff = Q_theta_eff;
-            debug_info_.near_goal = false;
-            debug_info_.proj_pt = proj.proj;
-            debug_info_.proj_segment_index = proj.segment_index;
-            debug_info_.ref_traj = ref_qp.x_ref;
-            debug_info_.seg_normals = ref_qp.seg_normals;
-            debug_info_.proj_pts = ref_qp.proj_pts;
-            debug_info_.v_profile = ref_qp.v_profile;
-            u_prev_ = u_rec;
-            return u_rec;
-        }
-    }
+    //     if (std::abs(h_err) > params_.recovery_heading_threshold)
+    //     {
+    //         const Control u_rec = {
+    //             0.0,
+    //             std::copysign(params_.omega_max, h_err)};
+    //         debug_info_.solver_ok = false;
+    //         debug_info_.solve_ms = 0.0;
+    //         debug_info_.cte_raw = cte_raw;
+    //         debug_info_.d_hard_eff = d_hard_eff;
+    //         debug_info_.v_scale = v_scale;
+    //         debug_info_.Q_theta_eff = Q_theta_eff;
+    //         debug_info_.near_goal = false;
+    //         debug_info_.proj_pt = proj.proj;
+    //         debug_info_.proj_segment_index = proj.segment_index;
+    //         debug_info_.ref_traj = ref_qp.x_ref;
+    //         debug_info_.seg_normals = ref_qp.seg_normals;
+    //         debug_info_.proj_pts = ref_qp.proj_pts;
+    //         debug_info_.v_profile = ref_qp.v_profile;
+    //         u_prev_ = u_rec;
+    //         return u_rec;
+    //     }
+    // }
 
     // ── C3. Near-goal detection ────────────────────────────────────────
     // Terminal-v=0 only when BOTH near the path end AND laterally close.

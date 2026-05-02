@@ -90,8 +90,16 @@ QP QPBuilder::build(
         const int ix = idx_x(k);
         const bool term = (k == N);
 
-        const double Qxy = term ? params_.Q_xy_terminal : params_.Q_xy;
-        const double Qth = term ? ctx.Q_theta_terminal_eff : ctx.Q_theta_eff;
+        // Exponential horizon decay: weights shrink as k grows so that far-
+        // horizon polyline references do not over-constrain corner geometry.
+        // Terminal weights are exempt — they are intentionally elevated to
+        // act as a value-function approximation and must stay strong.
+        const double decay = term ? 1.0 : std::pow(params_.q_xy_decay, k);
+        const double decay_th = term ? 1.0 : std::pow(params_.q_theta_decay, k);
+
+        const double Qxy = term ? params_.Q_xy_terminal : params_.Q_xy * decay;
+        const double Qth =
+            term ? ctx.Q_theta_terminal_eff : ctx.Q_theta_eff * decay_th;
 
         Pt.emplace_back(ix + 0, ix + 0, 2.0 * Qxy);
         Pt.emplace_back(ix + 1, ix + 1, 2.0 * Qxy);
