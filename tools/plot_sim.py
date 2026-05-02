@@ -366,6 +366,37 @@ def make_update(frames, arts, params, pre):
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
+def _print_stats(frames, params):
+    import numpy as np
+    ctes   = np.array([abs(f.get("cte", 0)) for f in frames])
+    vs     = np.array([f["control"]["v"]     for f in frames])
+    robots = np.array([[f["robot"]["x"], f["robot"]["y"]] for f in frames])
+    n      = len(frames)
+    t_end  = frames[-1].get("t", n * params.get("dt", 0.05))
+    last   = frames[-1]
+
+    print(f"Frames : {n}   sim_time : {t_end:.2f}s")
+    print(f"Final  : x={last['robot']['x']:.4f}  y={last['robot']['y']:.4f}  "
+          f"θ={last['robot']['theta']:.4f}  v={last['control']['v']:.4f}")
+    print(f"CTE    : max={ctes.max():.4f}  mean={ctes.mean():.4f}  "
+          f"p95={np.percentile(ctes,95):.4f}  m")
+    print(f"Speed  : mean={vs.mean():.4f}  max={vs.max():.4f}  min={vs.min():.4f}  m/s")
+
+    # Corner analysis: frames where robot is near x=2 (corner zone)
+    corner = [f for f in frames if 1.6 <= f["robot"]["x"] <= 2.4 and f["robot"]["y"] <= 0.6]
+    if corner:
+        c_cte = [abs(f.get("cte", 0)) for f in corner]
+        print(f"Corner : {len(corner)} frames  max_cte={max(c_cte):.4f}m  "
+              f"mean_v={sum(f['control']['v'] for f in corner)/len(corner):.4f} m/s")
+
+    # Last 10% of frames for goal approach
+    tail = frames[int(n * 0.9):]
+    t_vs = [f["control"]["v"] for f in tail]
+    print(f"Final10%: mean_v={sum(t_vs)/len(t_vs):.4f}  min_v={min(t_vs):.4f} m/s")
+    solver_fails = sum(1 for f in frames if not f.get("solver_ok", True))
+    print(f"Solver fails: {solver_fails}/{n}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary",   help="Path to C++ sim binary")
@@ -376,6 +407,7 @@ def main():
     ap.add_argument("--draw",     action="store_true", help="Draw path interactively")
     ap.add_argument("--fps",      type=int, default=20)
     ap.add_argument("--save",     help="Save animation to file (MP4 or GIF)")
+    ap.add_argument("--stats",    action="store_true", help="Print text summary instead of animating")
     args = ap.parse_args()
 
     if args.draw:
@@ -396,6 +428,10 @@ def main():
 
     if not frames:
         sys.exit("No frames parsed.")
+
+    if args.stats:
+        _print_stats(frames, params)
+        return
 
     pre = precompute(frames, params)
 
