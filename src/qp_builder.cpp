@@ -1,26 +1,30 @@
 // =============================================================================
-// QPBuilder::build  —  full MPC QP assembly
+// QPBuilder::build  —  Frenet-frame MPC QP assembly
 //
 // Decision vector layout:
-//   z = [ x_0 … x_N       (NX=3 per step, N+1 blocks)
-//         u_0 … u_{N-1}   (NU=2 per step, N   blocks)
-//         ε_0 … ε_{N-1}   (1   per step, N   blocks)  corridor slack ]
+//   z = [ s_0, e_y,0, e_θ,0  …  s_N, e_y,N, e_θ,N   (NX=3 per step, N+1)
+//         v_0, ω_0            …  v_{N-1}, ω_{N-1}    (NU=2 per step, N)
+//         ε_0                 …  ε_N                  (1    per step, N+1) ]
 //
-// Constraint groups (rows of A):
-//   1. Dynamics          x_{k+1} = A_k x_k + B_k u_k     N·NX rows
-//   2. Initial cond.     x_0 = x0                         NX rows
-//   3. Control bounds    v_min ≤ v_k ≤ v_max,
-//                        |ω_k| ≤ ω_max                    N·NU rows
-//   4. Accel. rate       |u_k − u_{k-1}| ≤ Δu_max        N·NU rows
-//   5. Corridor          |n_k^T pos_k − c_k| ≤ d_k + ε_k  2·(N+1) rows
-//   6. Slack bound       ε_k ≥ 0                           N+1  rows
-//   7. Terminal velocity v_{N-1} = 0 (near goal) or ≤ v_max (normal)  1 row
+// Cost:
+//   Σ_k  Q_ey·e_y,k²  +  Q_eth·e_θ,k²          (track path centreline)
+//   Σ_k  Q_v·(v_k − v_ref,k)²                   (track velocity profile)
+//   Σ_k  R_v·v_k² + R_ω·ω_k²                    (control effort)
+//   Σ_k  R_rate·(u_k − u_{k-1})²                (smoothness)
+//   Σ_k  w_slack·ε_k²                            (soft-corridor penalty)
+//   −w_progress · s_N                            (progress reward)
+//   Terminal weights Q_ey_terminal, Q_eth_terminal at k=N.
+//
+// Corridor:
+//   |e_y,k| ≤ d_k + ε_k   (box constraint on a state variable — exact,
+//                            no normal-vector approximation)
+//   d_k = d_hard + max(0, |e_y,0|−d_hard)·exp(−k/funnel_decay_tau)
 //
 // SPARSITY INVARIANT:
 //   All entries of A_k and B_k in Group 1 are emitted unconditionally.
 //   Every other group emits a fixed number of entries per row.
-//   The nonzero (row, col) pattern of A is therefore identical across all
-//   iterations, which allows Solver to use osqp_update_data_mat() instead of
+//   The nonzero (row,col) pattern of A is therefore identical across all
+//   iterations, allowing Solver to use osqp_update_data_mat() instead of
 //   a full factorisation every cycle.
 // =============================================================================
 
@@ -35,7 +39,7 @@ namespace mpc
 static constexpr double kInf = 1e30;
 
 QP QPBuilder::build(
-    const State& x0,
+    const FrenetState& x0,
     const Control& u_prev,
     const Reference& ref,
     const LinModel& model,
@@ -44,14 +48,10 @@ QP QPBuilder::build(
     const int N = params_.N;
     const double dt = params_.dt;
 
-    assert((int)model.A.size() == N && "LinModel horizon mismatch");
-    assert((int)ref.x_ref.size() == N + 1 && "x_ref size mismatch");
-    assert((int)ref.seg_normals.size() == N + 1 && "seg_normals size mismatch");
-    assert((int)ref.proj_pts.size() == N + 1 && "proj_pts size mismatch");
+    assert((int)model.A.size() == N);
+    assert((int)ref.v_profile.size() == N + 1);
 
     // ── Variable counts ───────────────────────────────────────────────
-    // Bug #4 fix: slack variables cover k = 0…N (N+1 total) so that the
-    // terminal state x_N is corridor-constrained via its own slack ε_N.
     const int n_vars = (N + 1) * NX + N * NU + (N + 1);
 
     // ── Constraint row layout ─────────────────────────────────────────
@@ -59,10 +59,11 @@ QP QPBuilder::build(
     const int row_ic = row_dyn + N * NX;
     const int row_ubnd = row_ic + NX;
     const int row_accel = row_ubnd + N * NU;
-    const int row_corr = row_accel + N * NU;       // 2*(N+1) rows
-    const int row_slack = row_corr + 2 * (N + 1);  // (N+1)   rows
+    const int row_corr = row_accel + N * NU;      // 2*(N+1) rows
+    const int row_slack = row_corr + 2 * (N + 1); // N+1 rows
     const int row_term = row_slack + (N + 1);
-    const int n_constr = row_term + 1;
+    const int row_mono = row_term + 1;             // N rows
+    const int n_constr = row_mono + N;
 
     // ── Allocate ──────────────────────────────────────────────────────
     QP qp;
@@ -73,54 +74,52 @@ QP QPBuilder::build(
     qp.u = Eigen::VectorXd::Constant(n_constr, kInf);
 
     std::vector<Eigen::Triplet<double>> Pt, At;
-    Pt.reserve(n_vars * 8);
-    At.reserve(n_constr * 12);
+    Pt.reserve(n_vars * 6);
+    At.reserve(n_constr * 8);
 
     // =================================================================
     // COST  (OSQP minimises  0.5 z^T P z + q^T z)
     //
-    // For  W · (z_i − r_i)² :
-    //   P(i,i) += 2·W
-    //   q(i)   -= 2·W·r_i
+    // For  W·(z_i − r_i)² :  P(i,i) += 2W,  q(i) -= 2Wr_i
     // =================================================================
 
-    // ── 1a. Tracking ─────────────────────────────────────────────────
+    // ── 1a. Frenet tracking ───────────────────────────────────────────
     for (int k = 0; k <= N; ++k)
     {
         const int ix = idx_x(k);
         const bool term = (k == N);
 
-        // Exponential horizon decay: weights shrink as k grows so that far-
-        // horizon polyline references do not over-constrain corner geometry.
-        // Terminal weights are exempt — they are intentionally elevated to
-        // act as a value-function approximation and must stay strong.
-        const double decay = term ? 1.0 : std::pow(params_.q_xy_decay, k);
-        const double decay_th = term ? 1.0 : std::pow(params_.q_theta_decay, k);
+        const double Qey = term ? params_.Q_ey_terminal : params_.Q_ey;
+        const double Qeth = term ? params_.Q_eth_terminal : params_.Q_eth;
 
-        const double Qxy = term ? params_.Q_xy_terminal : params_.Q_xy * decay;
-        const double Qth =
-            term ? ctx.Q_theta_terminal_eff : ctx.Q_theta_eff * decay_th;
+        // e_y cost   (ix+1 = e_y index)
+        Pt.emplace_back(ix + 1, ix + 1, 2.0 * Qey);
 
-        Pt.emplace_back(ix + 0, ix + 0, 2.0 * Qxy);
-        Pt.emplace_back(ix + 1, ix + 1, 2.0 * Qxy);
-        Pt.emplace_back(ix + 2, ix + 2, 2.0 * Qth);
-
-        qp.q(ix + 0) -= 2.0 * Qxy * ref.x_ref[k].x;
-        qp.q(ix + 1) -= 2.0 * Qxy * ref.x_ref[k].y;
-        qp.q(ix + 2) -= 2.0 * Qth * ref.x_ref[k].theta;
+        // e_theta cost  (ix+2 = e_theta index)
+        Pt.emplace_back(ix + 2, ix + 2, 2.0 * Qeth);
     }
 
-    // ── 1b. Control effort + smoothness ──────────────────────────────
+    // ── 1b. Progress reward  −w_progress · s_N ────────────────────────
+    qp.q(idx_x(N) + 0) -= params_.w_progress;
+
+    // ── 1c. Control effort + velocity tracking + smoothness ───────────
     //
-    // Per-step cost:  (R + R_rate)·u_k²  −  2·R_rate·u_k·u_{k-1}
-    //
-    // k = 0:   u_{-1} = u_prev (constant).  Cross-term enters q only.
-    // k > 0:   u_{k-1} is a variable.       Off-diagonal P entry (upper-tri).
+    // Per-step velocity cost:  (R_v + Q_v)·v_k² − 2·Q_v·v_ref·v_k
+    // Per-step omega cost:      R_omega·ω_k²
+    // Smoothness:              R_rate·(u_k − u_{k-1})² via off-diagonal P.
     for (int k = 0; k < N; ++k)
     {
         const int iu = idx_u(k, N);
+        const double v_ref = ref.v_profile[k];
 
-        Pt.emplace_back(iu + 0, iu + 0, 2.0 * (params_.R_v + params_.R_rate_v));
+        // Velocity: effort + profile tracking
+        Pt.emplace_back(
+            iu + 0,
+            iu + 0,
+            2.0 * (params_.R_v + params_.Q_v + params_.R_rate_v));
+        qp.q(iu + 0) -= 2.0 * params_.Q_v * v_ref;
+
+        // Omega: effort + smoothness
         Pt.emplace_back(
             iu + 1,
             iu + 1,
@@ -133,7 +132,7 @@ QP QPBuilder::build(
         }
         else
         {
-            const int ip = idx_u(k - 1, N);  // ip < iu  → upper-triangular ✓
+            const int ip = idx_u(k - 1, N);  // ip < iu → upper-triangular ✓
             Pt.emplace_back(ip + 0, iu + 0, -2.0 * params_.R_rate_v);
             Pt.emplace_back(ip + 1, iu + 1, -2.0 * params_.R_rate_omega);
             Pt.emplace_back(ip + 0, ip + 0, 2.0 * params_.R_rate_v);
@@ -141,8 +140,8 @@ QP QPBuilder::build(
         }
     }
 
-    // ── 1c. Slack penalty ─────────────────────────────────────────────
-    for (int k = 0; k <= N; ++k)  // k=0…N — includes terminal slack ε_N
+    // ── 1d. Slack penalty ─────────────────────────────────────────────
+    for (int k = 0; k <= N; ++k)
     {
         Pt.emplace_back(
             idx_slack(k, N),
@@ -156,11 +155,7 @@ QP QPBuilder::build(
     // CONSTRAINTS
     // =================================================================
 
-    // ── Group 1: Dynamics  x_{k+1} − A_k x_k − B_k u_k = 0 ─────────
-    //
-    // All nine A_k entries and all six B_k entries are always emitted,
-    // even when some are zero.  This is the critical requirement for a
-    // stable sparsity pattern across iterations.
+    // ── Group 1: Dynamics  x_{k+1} − A_k x_k − B_k u_k = d_k ───────
     for (int k = 0; k < N; ++k)
     {
         const int row = row_dyn + k * NX;
@@ -173,14 +168,14 @@ QP QPBuilder::build(
 
         for (int i = 0; i < NX; ++i)
         {
-            At.emplace_back(row + i, xk1 + i, 1.0);  // +x_{k+1}
+            At.emplace_back(row + i, xk1 + i, 1.0);
             for (int j = 0; j < NX; ++j)
             {
-                At.emplace_back(row + i, xk + j, -Ak(i, j));  // −A_k x_k
+                At.emplace_back(row + i, xk + j, -Ak(i, j));
             }
             for (int j = 0; j < NU; ++j)
             {
-                At.emplace_back(row + i, uk + j, -Bk(i, j));  // −B_k u_k
+                At.emplace_back(row + i, uk + j, -Bk(i, j));
             }
         }
         for (int i = 0; i < NX; ++i)
@@ -190,17 +185,16 @@ QP QPBuilder::build(
         }
     }
 
-    // ── Group 2: Initial condition  x_0 = x0 ────────────────────────
+    // ── Group 2: Initial condition  x_0 = x0_frenet ─────────────────
     for (int i = 0; i < NX; ++i)
     {
         At.emplace_back(row_ic + i, idx_x(0) + i, 1.0);
     }
+    qp.l(row_ic + 0) = qp.u(row_ic + 0) = x0.s;
+    qp.l(row_ic + 1) = qp.u(row_ic + 1) = x0.e_y;
+    qp.l(row_ic + 2) = qp.u(row_ic + 2) = x0.e_theta;
 
-    qp.l(row_ic + 0) = qp.u(row_ic + 0) = x0.x;
-    qp.l(row_ic + 1) = qp.u(row_ic + 1) = x0.y;
-    qp.l(row_ic + 2) = qp.u(row_ic + 2) = x0.theta;
-
-    // ── Group 3: Control box bounds ──────────────────────────────────
+    // ── Group 3: Control box bounds ───────────────────────────────────
     for (int k = 0; k < N; ++k)
     {
         const int row = row_ubnd + k * NU;
@@ -224,7 +218,6 @@ QP QPBuilder::build(
         const int row = row_accel + k * NU;
         const int uk = idx_u(k, N);
 
-        // v: single-variable row for k=0, two-variable for k>0
         At.emplace_back(row + 0, uk + 0, 1.0);
         if (k == 0)
         {
@@ -238,7 +231,6 @@ QP QPBuilder::build(
             qp.u(row + 0) = dv;
         }
 
-        // ω
         At.emplace_back(row + 1, uk + 1, 1.0);
         if (k == 0)
         {
@@ -253,22 +245,18 @@ QP QPBuilder::build(
         }
     }
 
-    // ── Group 5: Soft corridor ────────────────────────────────────────
+    // ── Group 5: Soft corridor  |e_y,k| ≤ d_k + ε_k ─────────────────
     //
-    //  e_k = n_k^T · [x_k, y_k]  −  c_k     (c_k = n_k^T · proj_k)
-    //  |e_k| ≤ d_k + ε_k
+    // e_y is at decision-variable index idx_x(k)+1.
+    // The box constraint becomes two rows:
+    //   Row A:  +e_y,k − ε_k ≤  d_k
+    //   Row B:  −e_y,k − ε_k ≤  d_k
     //
-    //  Row A:  +n·x − ε ≤  d_k + c
-    //  Row B:  −n·x − ε ≤  d_k − c
-    //
-    // Bug #4 fix: loop runs k = 0…N so that x_N is corridor-constrained.
-    //
-    // Funnel fix: d_k is the per-step effective width computed from the
-    //   initial exceedance.  Previously ctx.d_hard_eff was written to qp.u()
-    //   instead of d_k, making the funneling calculation dead code.
-
+    // d_k funnels from |e_y,0| at k=0 back to d_hard over funnel_decay_tau.
+    // This maintains feasibility when the robot starts outside the corridor
+    // without permanently relaxing the constraint.
     const double initial_exceedance =
-        std::max(0.0, std::abs(ctx.cte_raw) - ctx.d_hard_eff);
+        std::max(0.0, std::abs(ctx.e_y_0) - params_.d_hard);
 
     for (int k = 0; k <= N; ++k)
     {
@@ -276,41 +264,43 @@ QP QPBuilder::build(
         const int is = idx_slack(k, N);
         const int rA = row_corr + 2 * k;
         const int rB = rA + 1;
-        const Eigen::Vector2d& n = ref.seg_normals[k];
-        const double c = n.dot(ref.proj_pts[k]);
 
-        // Exponentially tighten the corridor from the initial exceedance back
-        // down to d_hard_eff over funnel_decay_tau steps.
         const double d_k =
-            ctx.d_hard_eff +
+            params_.d_hard +
             initial_exceedance * std::exp(-k / params_.funnel_decay_tau);
 
-        At.emplace_back(rA, ix + 0, n.x());
-        At.emplace_back(rA, ix + 1, n.y());
-        At.emplace_back(rA, is, -1.0);
-        qp.u(rA) = d_k + c;
+        At.emplace_back(rA, ix + 1, 1.0);   // +e_y,k
+        At.emplace_back(rA, is, -1.0);       // −ε_k
+        qp.u(rA) = d_k;
 
-        At.emplace_back(rB, ix + 0, -n.x());
-        At.emplace_back(rB, ix + 1, -n.y());
-        At.emplace_back(rB, is, -1.0);
-        qp.u(rB) = d_k - c;
+        At.emplace_back(rB, ix + 1, -1.0);  // −e_y,k
+        At.emplace_back(rB, is, -1.0);       // −ε_k
+        qp.u(rB) = d_k;
     }
 
-    // ── Group 6: Slack non-negativity ─────────────────────────────────
-    for (int k = 0; k <= N; ++k)  // k=0…N — mirrors the corridor loop
+    // ── Group 6: Slack non-negativity  ε_k ≥ 0 ───────────────────────
+    for (int k = 0; k <= N; ++k)
     {
         At.emplace_back(row_slack + k, idx_slack(k, N), 1.0);
         qp.l(row_slack + k) = 0.0;
     }
 
     // ── Group 7: Terminal velocity ────────────────────────────────────
-    //
-    // Row is always present to keep sparsity constant.
-    //   near_goal = false  →  v_{N-1} ≤ v_max  (effectively inactive)
-    //   near_goal = true   →  v_{N-1} = 0       (enforce stop)
     At.emplace_back(row_term, idx_u(N - 1, N) + 0, 1.0);
     qp.l(row_term) = params_.v_min;
     qp.u(row_term) = ctx.near_goal ? 0.0 : params_.v_max;
+
+    // ── Group 8: Monotonicity  s_{k+1} − s_k ≥ 0 ─────────────────────
+    //
+    // Prevents the optimizer from choosing trajectories that back up along
+    // the path.  Encoded as two nonzeros per row for fixed sparsity.
+    for (int k = 0; k < N; ++k)
+    {
+        const int row = row_mono + k;
+        At.emplace_back(row, idx_x(k + 1) + 0, 1.0);   // +s_{k+1}
+        At.emplace_back(row, idx_x(k) + 0, -1.0);       // −s_k
+        qp.l(row) = 0.0;
+    }
 
     qp.A.setFromTriplets(At.begin(), At.end());
     return qp;

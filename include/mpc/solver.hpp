@@ -46,10 +46,10 @@ public:
     /// Undefined if the last update() returned false.
     Control getControl() const;
 
-    /// Return the full predicted state trajectory x_0 … x_N extracted from
+    /// Return the full predicted Frenet trajectory x_0 … x_N extracted from
     /// the most recent solution vector.  Returns an empty vector if no
     /// successful solve has occurred yet.
-    std::vector<State> getStatePrediction() const;
+    std::vector<FrenetState> getStatePrediction() const;
 
 private:
     OSQPSolver* solver_ = nullptr;

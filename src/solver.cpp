@@ -109,7 +109,7 @@ Control Solver::getControl() const
     return {solution_[offset + 0], solution_[offset + 1]};
 }
 
-std::vector<State> Solver::getStatePrediction() const
+std::vector<FrenetState> Solver::getStatePrediction() const
 {
     if (solution_.empty() || N_ == 0)
     {
@@ -118,8 +118,9 @@ std::vector<State> Solver::getStatePrediction() const
 
     // State blocks occupy the first (N_+1)*NX elements of the decision vector.
     // Layout: z = [ x_0 x_1 ... x_N  u_0 ... u_{N-1}  ε_0 ... ε_{N-1} ]
+    // In the Frenet formulation x_k = [s_k, e_y_k, e_theta_k].
     constexpr int NX = 3;
-    std::vector<State> pred(N_ + 1);
+    std::vector<FrenetState> pred(N_ + 1);
     for (int k = 0; k <= N_; ++k)
     {
         const int base = NX * k;
