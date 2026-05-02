@@ -120,24 +120,24 @@ int main(int argc, char** argv)
         // Dynamic path update for the default scenario (scenario 0).
         if (scenario == 0 && custom_path_file.empty() && step == 150)
         {
-            path = makeStraightPath(3.0, 5.0, 0.3);
+            path = makeStraightPath(10.0, 15.0, 0.3);
             std::cerr << "[sim] Path updated at step " << step
                       << " (t=" << sim_t << "s)\n";
         }
 
         // Add sensor noise before passing state to the controller.
-        // const State x_noisy = noise.apply(x);
+        const State x_noisy = noise.apply(x);
 
-        const Control u = ctrl.update(x, path);
+        const Control u = ctrl.update(x_noisy, path);
 
         // Optionally prune traversed path segments (uncomment to enable):
-        // const size_t pruned = ctrl.pruneTraversedSegments(path);
-        // if (pruned > 0)
-        //     std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
-        //               << " segment(s), path now " << path.size() << " pts\n";
+        const size_t pruned = ctrl.pruneTraversedSegments(path);
+        if (pruned > 0)
+            std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
+                      << " segment(s), path now " << path.size() << " pts\n";
 
         const DebugInfo& dbg = ctrl.debugInfo();
-        logger.logFrame(sim_t, x, u, path, dbg);
+        logger.logFrame(sim_t, x_noisy, u, path, dbg);
 
         // Advance ground-truth state with the clean (noiseless) plant model.
         x = plantStep(x, u, p.dt);
