@@ -27,7 +27,7 @@ class Projector
 {
 public:
     /// Only advance to the next segment when t exceeds this threshold.
-    double seg_advance_t = 0.7; // REMOVE
+    double seg_advance_t = 0.7;  // REMOVE
 
     /// How many segments ahead of last_segment_ to search.
     size_t look_ahead = 5;  // REMOVE
@@ -37,6 +37,10 @@ public:
     void reset() { last_segment_ = 0; }
 
     ProjectionResult project(const State& x, const Path& path);
+
+    /// Index of the last matched segment.  Used by MPCController to compute
+    /// the horizon-aware path hash window without re-projecting.
+    size_t lastSegment() const { return last_segment_; }
 
 private:
     size_t last_segment_ = 0;

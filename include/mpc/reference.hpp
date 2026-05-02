@@ -29,16 +29,23 @@ public:
 
     /// Build a horizon-length reference starting from the current projection.
     ///
-    /// @param path   Current path polyline.
-    /// @param proj   Projection result for the robot's current (latency-
-    ///               compensated) position.
-    /// @param v_cur  Current robot forward speed [m/s].  Passed as the seed
-    ///               for the forward velocity integration so the profile is
-    ///               continuous across MPC cycles.  Default 0 (cold start).
+    /// @param path       Current path polyline.
+    /// @param proj       Projection result for the robot's current (latency-
+    ///                   compensated) position.
+    /// @param v_cur      Current robot forward speed [m/s].  Passed as the seed
+    ///                   for the forward velocity integration so the profile is
+    ///                   continuous across MPC cycles.  Default 0 (cold start).
+    /// @param prev_pred  Optional pointer to the previous cycle's predicted state
+    ///                   trajectory (length >= N+1).  When supplied and marked
+    ///                   trusted, the generator uses prev_pred[k+1] as x_ref[k]
+    ///                   (per-step gate-checked against the corridor) and uses
+    ///                   prev_pred[k] to assign the physical corridor segment at
+    ///                   step k.  Pass nullptr for a polyline cold start.
     Reference generate(
         const Path& path,
         const ProjectionResult& proj,
-        double v_cur = 0.0) const;
+        double v_cur = 0.0,
+        const std::vector<State>* prev_pred = nullptr) const;
 
 private:
     MPCParams params_;

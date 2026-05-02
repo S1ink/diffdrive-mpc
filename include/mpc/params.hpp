@@ -151,6 +151,39 @@ struct MPCParams
     // On OSQP failure, return u_prev scaled by this factor.
     double fallback_decay = 0.8;
 
+    // ── Predicted-trajectory reference (SQP warm reference) ──────────────
+    //
+    // When a valid previous prediction exists, the reference generator uses
+    // prev_pred[k+1] as x_ref[k] instead of the polyline sample.  This
+    // allows the optimizer to naturally corner-cut and inherit its previous
+    // solution, while the corridor constraints enforce the d_hard bound.
+    //
+    // pred_trust_scale: per-step gate.  A predicted point is only used as
+    //   the reference for step k when its corridor deviation is below
+    //   (pred_trust_scale * d_hard).  Points outside this gate fall back to
+    //   the polyline sample for that step.  0.85 is a good default.
+    double pred_trust_scale = 0.85;
+
+    // pred_reset_dist: one-step prediction health check.  If the Euclidean
+    //   distance between x_pred (actual compensated state) and prev_pred[1]
+    //   (what was predicted one step ago) exceeds this value, the prediction
+    //   is invalidated and the system cold-starts from the polyline.
+    //   Set to 0.0 to auto-compute as (0.5 * d_hard).
+    double pred_reset_dist = 0.0;  // [m]
+
+    // ── Horizon-aware path hashing ────────────────────────────────────────
+    //
+    // The path hash used for change detection covers only segments within and
+    // immediately ahead of the MPC horizon.  Segments appended beyond the
+    // horizon (common in online mapping / exploration) do not trigger a
+    // projector reset or prediction invalidation.
+    //
+    // path_horizon_hash_margin: number of extra path POINTS beyond the nominal
+    //   horizon window (cur_seg + N) to include in the hash.  Acts as a buffer
+    //   so that a replan one step ahead of the horizon is caught promptly.
+    //   Default 3 is sufficient for most replanning cadences.
+    int path_horizon_hash_margin = 3;
+
     // ── Derived / validation ──────────────────────────────────────────────
 
     /// Minimum prediction horizon steps required to observe the complete

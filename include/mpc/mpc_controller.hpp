@@ -96,17 +96,26 @@ struct DebugInfo
 ///
 ///   A)  Always trust measured state (latency compensation only).
 ///   B)  Persistent OSQP + warm start (delegated to Solver).
-///   C)  Hash-based path change detection.
-///       Projection reset when path identity changes.
-///       Reference blending suppressed on path change (new geometry applied
-///       immediately; blending only smooths same-path numerical transitions).
-///       Goal clamping.
+///   C)  Horizon-aware path change detection.
+///       Path changes within the MPC horizon trigger projector reset and
+///       prediction invalidation.  Segments appended beyond the horizon
+///       (e.g. online mapping) are silently ignored until they enter the
+///       window, so replanning cadence does not cause unnecessary resets.
+///       Reference blending is suppressed only on in-horizon path changes.
 ///   D)  Adaptive corridor width.
 ///       Velocity reduction under cross-track error.
 ///       Cross-track deadband.
 ///   E)  Terminal velocity constraint (via QPContext).
 ///   F)  Heading weight scaling when far from path.
 ///   G)  Solver failure fallback (u_prev * fallback_decay).
+///   H)  SQP-style predicted-trajectory reference.
+///       When the previous predicted trajectory is valid, x_ref[k] is set to
+///       prev_pred[k+1] (per-step gate-checked) and the corridor segment
+///       assignment uses prev_pred[k] instead of a polyline-walking ghost.
+///       This eliminates the corner-cutting keypoint mismatch described in
+///       the original architecture review.
+///       The prediction is invalidated on: path change within horizon,
+///       solver failure, or one-step prediction error > pred_reset_dist.
 ///
 /// Usage:
 ///   MPCController ctrl(params);
@@ -125,8 +134,8 @@ public:
     Control update(const State& x_measured, const Path& path);
 
     /// Hard reset: clears all internal state (warm start, blended reference,
-    /// previous control, path hash).  Call after large teleportations or
-    /// emergency stops.
+    /// previous control, path hash, prediction validity).
+    /// Call after large teleportations or emergency stops.
     void reset();
 
     /// Remove all fully-traversed leading path segments from `path`.
@@ -163,11 +172,16 @@ private:
     Reference ref_prev_;
     bool has_prev_ref_{false};
 
-    /// Hash of the path geometry seen in the previous update() call.
-    /// A change in this value triggers a projector reset and suppresses
-    /// reference blending for that cycle so stale geometry is not mixed
-    /// into the new reference.
-    size_t path_hash_{0};
+    /// Hash of the path geometry within the current horizon window.
+    /// Covers path points [0, cur_seg + N + margin].  Changes only when
+    /// path geometry within or immediately ahead of the horizon is modified,
+    /// so appended segments beyond the horizon do not trigger resets.
+    size_t path_horizon_hash_{0};
+
+    /// true when debug_info_.pred_traj is valid and safe to use as the
+    /// reference seed for the next cycle.  Cleared on: horizon path change,
+    /// solver failure, large one-step prediction error.
+    bool pred_valid_{false};
 
     // ── Debug snapshot (updated every cycle) ──────────────────────────
     DebugInfo debug_info_;
@@ -195,10 +209,12 @@ private:
         const Reference& r_old,
         double alpha) const;
 
-    /// Compute a lightweight hash of a path's geometry.
-    /// Changes whenever any waypoint coordinate changes or the number of
-    /// points changes.
-    static size_t hashPath(const Path& path);
+    /// Compute a lightweight hash of a contiguous window of path points.
+    ///
+    /// Hashes points [0, to_pt) so the result is stable with respect to
+    /// appended points beyond to_pt.  Called with to_pt = min(cur_seg + N +
+    /// margin + 1, path.size()) so only in-horizon geometry is compared.
+    static size_t hashPath(const Path& path, size_t to_pt);
 };
 
 }  // namespace mpc

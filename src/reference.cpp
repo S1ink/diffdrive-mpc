@@ -7,6 +7,15 @@
 namespace mpc
 {
 
+// ── Internal types ────────────────────────────────────────────────────────────
+
+/// A speed constraint at a specific arc-length position along the path.
+struct VelocityEvent
+{
+    double s;      // arc-length position from path start [m]
+    double v_lim;  // maximum speed at this point [m/s]
+};
+
 // ── File-scope helpers ────────────────────────────────────────────────────────
 
 /// Compute cumulative arc lengths along the path.
@@ -23,58 +32,34 @@ static std::vector<double> cumulativeArcs(const Path& path)
     return cum;
 }
 
-/// Build a path-wide velocity profile using backward-pass deceleration
-/// smoothing, matching the approach from control.py::_build_velocity_profile().
+/// Find constraint events for the velocity profile:
+///   • End-of-path stop:   (total_arc, 0)
+///   • Each junction i where the heading change exceeds ~3°:
+///         speed limit = ω_max × avg_segment_length / Δθ
+///         (derived from ω = v·Δθ/ds_avg ≤ ω_max)
 ///
-/// Algorithm
-/// ---------
-///  1. Set v_lim = v_max everywhere.
-///  2. Clamp v_lim to 0 at the path end (terminal stop).
-///  3. At each interior waypoint junction, apply the yaw-rate-based corner
-///     speed limit:  v ≤ omega_max · ds_avg / angle   (derived from ω=v·κ).
-///     Junctions with a heading change < ~3° are skipped as negligible.
-///  4. Run three backward-pass sweeps to propagate deceleration constraints:
-///         v[i] = min(v[i],  sqrt(v[i+1]² + 2·a_max·ds[i]))
-///     Three iterations are enough to resolve cascading constraints (e.g. two
-///     tight corners in quick succession where the second corner tightens the
-///     entry speed required at the first).
-///
-/// The result guarantees that at every waypoint the stored speed is the
-/// maximum at which the robot CAN travel and still brake to every future
-/// speed limit in time under constant deceleration a_max.
-///
-/// @param path       Path polyline.
-/// @param cum        Cumulative arc lengths (length path.size()), from
-///                   cumulativeArcs().
-/// @param v_max      Maximum allowable forward speed [m/s].
-/// @param omega_max  Maximum angular speed used for corner limits [rad/s].
-/// @param a_max      Maximum deceleration magnitude [m/s²].
-/// @param out_v      Output: v_lim at each waypoint (length path.size()).
-static void buildVelocityProfile(
+/// Only junctions ahead of s0 are included.
+static std::vector<VelocityEvent> buildConstraintEvents(
     const Path& path,
     const std::vector<double>& cum,
+    double s0,
     double v_max,
-    double omega_max,
-    double a_max,
-    std::vector<double>& out_v)
+    double omega_max)
 {
+    std::vector<VelocityEvent> events;
     const int n = (int)path.size();
-    out_v.assign(n, v_max);
 
-    // ── Step 2: Terminal stop ─────────────────────────────────────────
-    out_v.back() = 0.0;
+    // Always include an end-of-path stop.
+    events.push_back({cum.back(), 0.0});
 
-    // ── Step 3: Corner speed limits ───────────────────────────────────
-    //
-    // At each interior junction i, the robot's angular velocity is
-    //   ω ≈ v · Δθ / ds_avg
-    // so ω ≤ omega_max  ⟹  v ≤ omega_max · ds_avg / Δθ.
-    //
-    // The average of the incoming and outgoing segment lengths is used as
-    // the arc estimate ds_avg, which gives a more stable estimate than
-    // either segment alone near junctions where one segment may be very short.
     for (int i = 1; i < n - 1; ++i)
     {
+        const double s_j = cum[i];
+        if (s_j <= s0 + 1e-6)
+        {
+            continue;  // behind or at current position
+        }
+
         const Eigen::Vector2d d_in =
             (path.pts[i].pos - path.pts[i - 1].pos).normalized();
         const Eigen::Vector2d d_out =
@@ -85,75 +70,21 @@ static void buildVelocityProfile(
 
         if (angle < 0.05)
         {
-            continue;  // < ~3°: negligible curvature, no limit
+            continue;  // < ~3°, negligible curvature
         }
 
+        // Average of incoming and outgoing segment lengths as arc estimate.
         const double l_in = (path.pts[i].pos - path.pts[i - 1].pos).norm();
         const double l_out = (path.pts[i + 1].pos - path.pts[i].pos).norm();
         const double ds_avg = 0.5 * (l_in + l_out);
 
-        const double v_corner =
+        const double v_lim =
             std::clamp(omega_max * ds_avg / (angle + 1e-9), 0.0, v_max);
-        out_v[i] = std::min(out_v[i], v_corner);
+
+        events.push_back({s_j, v_lim});
     }
 
-    // ── Step 4: Backward-pass deceleration smoothing (3 sweeps) ──────
-    //
-    // Each sweep propagates the constraint  v[i] ≤ sqrt(v[i+1]² + 2·a·ds)
-    // backward through the path.  One sweep is exact for isolated events;
-    // three sweeps ensure convergence when multiple tight turns interact
-    // (identical to control.py's loop-of-3 backward pass).
-    for (int pass = 0; pass < 3; ++pass)
-    {
-        for (int i = n - 2; i >= 0; --i)
-        {
-            const double seg_len =
-                (path.pts[i + 1].pos - path.pts[i].pos).norm();
-            const double v_reach =
-                std::sqrt(out_v[i + 1] * out_v[i + 1] + 2.0 * a_max * seg_len);
-            if (v_reach < out_v[i])
-            {
-                out_v[i] = v_reach;
-            }
-        }
-    }
-}
-
-/// Interpolate the precomputed velocity profile at arc position s_abs.
-///
-/// @param cum    Cumulative arc lengths at each waypoint (sorted, ascending).
-/// @param v_lim  Speed limit at each waypoint (parallel to cum).
-/// @param s_abs  Query arc position from path start.
-/// @param v_max  Fallback cap — returned when s_abs is before the first point.
-static double interpVelocityProfile(
-    const std::vector<double>& cum,
-    const std::vector<double>& v_lim,
-    double s_abs,
-    double v_max)
-{
-    if (s_abs >= cum.back())
-    {
-        return 0.0;  // beyond path end → must have stopped
-    }
-
-    // upper_bound gives the first element > s_abs
-    const auto it = std::upper_bound(cum.begin(), cum.end(), s_abs);
-    const int idx =
-        (int)(it - cum.begin());  // first index with cum[idx] > s_abs
-
-    if (idx == 0)
-    {
-        return v_lim[0];  // before first waypoint
-    }
-
-    // Linear interpolation between waypoints [idx-1, idx]
-    const double ds = cum[idx] - cum[idx - 1];
-    if (ds < 1e-12)
-    {
-        return v_lim[idx];
-    }
-    const double t = (s_abs - cum[idx - 1]) / ds;
-    return v_lim[idx - 1] * (1.0 - t) + v_lim[idx] * t;
+    return events;
 }
 
 /// Find the index of the segment whose arc-length interval contains s_abs.
@@ -192,7 +123,8 @@ double ReferenceGenerator::distToEnd(const Path& path, size_t idx, double t)
 Reference ReferenceGenerator::generate(
     const Path& path,
     const ProjectionResult& proj,
-    double v_cur) const
+    double v_cur,
+    const std::vector<State>* prev_pred) const
 {
     const int N = params_.N;
     const double dt = params_.dt;
@@ -239,50 +171,49 @@ Reference ReferenceGenerator::generate(
         return r;
     }
 
-    // ── 3. Build backward-pass velocity profile over the whole path ───
-    //
-    // This precomputes, at every waypoint, the maximum speed from which the
-    // robot can still brake to every upcoming corner and the path end in time.
-    // The profile encodes all future speed constraints so that the forward
-    // integration below can simply clamp against it without needing a per-step
-    // scan over individual constraint events.
-    //
-    // This is mathematically equivalent to (and intentionally mirrors) the
-    // backward-pass approach in control.py::_build_velocity_profile().
-    std::vector<double> path_v_lim;
-    buildVelocityProfile(
-        path,
-        cum,
-        params_.v_max,
-        params_.omega_max,
-        params_.a_max,
-        path_v_lim);
+    // ── 3. Build constraint events ────────────────────────────────────
+    const std::vector<VelocityEvent> events =
+        buildConstraintEvents(path, cum, s0, params_.v_max, params_.omega_max);
 
-    // ── 4. Forward velocity integration ──────────────────────────────
+    // ── 4. Forward velocity integration with look-ahead braking ──────
     //
-    // At each horizon step k:
-    //  a) Look up the precomputed speed cap at the robot's current arc
-    //     position (s0 + arc_at[k]).  Because the profile was built with a
-    //     backward pass, this cap is the tightest constraint over ALL future
-    //     events — not just the nearest — and accounts for cascading braking
-    //     requirements between closely spaced corners.
-    //  b) Clamp the velocity change to ±a_max·dt so the profile is
-    //     kinematically continuous across MPC cycles.
+    // At each horizon step k the tightest allowable speed NOW is the minimum
+    // over all upcoming events of:
     //
-    // arc_at[k] = cumulative arc traversed by the velocity profile before
-    //             step k (= distance from s0 to x_ref[k]).
+    //     v_cap = sqrt( v_ev² + 2·a_max·(s_ev − s_current) )
+    //
+    // This is the speed from which we can brake to v_ev by the time we
+    // reach s_ev under constant deceleration a_max.  We then advance the
+    // velocity within ± a_max·dt.
+    //
+    // arc_at[k] = cumulative arc traversed before step k
+    //             (= distance from s0 to x_ref[k]).
     std::vector<double> arc_at(N + 1, 0.0);
     {
         double v = std::clamp(v_cur, 0.0, params_.v_max);
 
         for (int k = 0; k < N; ++k)
         {
-            // Speed cap from the precomputed backward-pass profile.
-            const double s_k = s0 + arc_at[k];
-            const double v_cap =
-                interpVelocityProfile(cum, path_v_lim, s_k, params_.v_max);
+            // Look-ahead: tightest speed cap over all future events.
+            double v_cap = params_.v_max;
+            for (const auto& ev : events)
+            {
+                // Remaining arc from current forward-integration position
+                // to this event.
+                const double ds = (ev.s - s0) - arc_at[k];
+                if (ds >= 0.0)
+                {
+                    v_cap = std::min(
+                        v_cap,
+                        std::sqrt(
+                            std::max(
+                                0.0,
+                                ev.v_lim * ev.v_lim +
+                                    2.0 * params_.a_max * ds)));
+                }
+            }
 
-            // Advance velocity within ±a_max·dt (kinematic continuity).
+            // Advance velocity within acceleration limits.
             v = std::clamp(
                 v_cap,
                 v - params_.a_max * dt,
@@ -293,30 +224,55 @@ Reference ReferenceGenerator::generate(
             arc_at[k + 1] = arc_at[k] + v * dt;
         }
 
-        // Terminal slot: repeat last velocity (consumed by the lineariser
-        // for the final step but not used for arc advancement).
+        // Terminal slot: repeat last velocity (consumed by lineariser, not
+        // used for advancing arc).
         r.v_profile[N] = (N > 0) ? r.v_profile[N - 1] : 0.0;
     }
 
-    // ── 5. Sample reference positions at arc distances ─────────────────
+    // ── 5. Sample reference positions and assign corridor segments ─────
     //
-    // x_ref[k] is the desired state at time step k:
-    //   • Position sampled from the polyline at s0 + arc_at[k].
-    //   • Heading = direction of the polyline segment at that arc position.
+    // Two modes depending on whether a valid previous prediction is supplied:
     //
-    // seg_normals[k] uses the EXPECTED PHYSICAL SEGMENT the robot will
-    // occupy at step k (tracked via bisector advancement).  This separates
-    // the lookahead reference geometry from the corridor constraint geometry,
-    // which is essential for the QP to assign the correct half-space.
+    // COLD START (prev_pred == nullptr):
+    //   x_ref[k]      = polyline position at arc s0 + arc_at[k].
+    //   bisector test = expected_robot_pos advanced along the polyline.
+    //   This is the original behaviour.
+    //
+    // SQP WARM (prev_pred != nullptr):
+    //   x_ref[k]      = prev_pred[k+1] if it is inside the trust gate
+    //                   (corridor deviation < pred_trust_scale * d_hard),
+    //                   otherwise the polyline sample (per-step fallback).
+    //   bisector test = prev_pred[k] position.
+    //                   Using the actual predicted robot position to assign
+    //                   corridor segments eliminates the systematic forward
+    //                   bias that caused corner-cutting overshoot when the
+    //                   ghost position was advanced along the polyline.
+    //
+    // In both modes the heading in x_ref[k] is always taken from the polyline
+    // tangent at the arc-position sample.  The Stanley correction in
+    // MPCController::update() will adjust it for off-path recovery; keeping
+    // it as the tangent here ensures a stable geometric anchor.
+
+    // Determine whether we have a usable prediction for this call.
+    // We require prev_pred to cover at least N+1 states (indices 0..N) so
+    // that we can use prev_pred[k+1] for x_ref[k] up to k = N−1 and
+    // prev_pred[k] for the bisector test up to k = N.
+    const bool use_pred =
+        (prev_pred != nullptr) && ((int)prev_pred->size() >= N + 1);
+
+    // Trust gate threshold in metres.
+    const double trust_dist = params_.pred_trust_scale * params_.d_hard;
 
     size_t expected_robot_idx = proj.segment_index;
-    Eigen::Vector2d expected_robot_pos = proj.proj;
+    Eigen::Vector2d expected_robot_pos = proj.proj;  // used only in cold start
 
     for (int k = 0; k <= N; ++k)
     {
-        // ── Reference position ─────────────────────────────────────────
+        // ── Polyline reference position at this step ───────────────────
+        //
+        // Always computed regardless of mode — used as the heading source
+        // and as the per-step fallback for x_ref when use_pred is true.
         const double s_abs = std::min(s0 + arc_at[k], total);
-
         const int seg_k = segmentAtArc(cum, s_abs);
         const double seg_len_k = segl[seg_k];
         const double t_k =
@@ -324,17 +280,25 @@ Reference ReferenceGenerator::generate(
                 ? std::clamp((s_abs - cum[seg_k]) / seg_len_k, 0.0, 1.0)
                 : 0.0;
 
-        const Eigen::Vector2d pos =
+        const Eigen::Vector2d polyline_pos =
             path.pts[seg_k].pos +
             t_k * (path.pts[seg_k + 1].pos - path.pts[seg_k].pos);
 
         const Eigen::Vector2d ref_dir = path.segmentDir(seg_k);
         const double theta_ref = std::atan2(ref_dir.y(), ref_dir.x());
 
+        // ── Query position for corridor segment assignment ─────────────
+        //
+        // In SQP warm mode, use the predicted robot position at step k.
+        // In cold start mode, use the polyline-walking accumulator.
+        const Eigen::Vector2d query_pos =
+            use_pred ? Eigen::Vector2d((*prev_pred)[k].x, (*prev_pred)[k].y)
+                     : expected_robot_pos;
+
         // ── Physical corridor segment (bisector advancement) ───────────
         //
-        // Advance expected_robot_idx while the EXPECTED robot position has
-        // crossed the angle-bisector plane at the next junction.
+        // Advance expected_robot_idx while the query position has crossed
+        // the angle-bisector plane at the next junction.
         while (expected_robot_idx < path.size() - 2)
         {
             const Eigen::Vector2d A = path.pts[expected_robot_idx].pos;
@@ -349,7 +313,7 @@ Reference ReferenceGenerator::generate(
                 n_bisect = d1;
             }
 
-            if ((expected_robot_pos - B).dot(n_bisect) > 0.0)
+            if ((query_pos - B).dot(n_bisect) > 0.0)
             {
                 expected_robot_idx++;
             }
@@ -362,11 +326,7 @@ Reference ReferenceGenerator::generate(
         const Eigen::Vector2d active_dir = path.segmentDir(expected_robot_idx);
         const Eigen::Vector2d physical_normal(-active_dir.y(), active_dir.x());
 
-        // ── Store ──────────────────────────────────────────────────────
-        r.x_ref[k] = {pos.x(), pos.y(), theta_ref};
-        r.seg_normals[k] = physical_normal;
-
-        // Project expected_robot_pos onto the active (physical) segment
+        // ── Corridor projection point ──────────────────────────────────
         const Eigen::Vector2d pA = path.pts[expected_robot_idx].pos;
         const Eigen::Vector2d pB = path.pts[expected_robot_idx + 1].pos;
         const Eigen::Vector2d pAB = pB - pA;
@@ -374,16 +334,53 @@ Reference ReferenceGenerator::generate(
         Eigen::Vector2d corr_proj = pA;
         if (plen_sq > 1e-12)
         {
-            const double t_corr = std::clamp(
-                (expected_robot_pos - pA).dot(pAB) / plen_sq,
-                0.0,
-                1.0);
+            const double t_corr =
+                std::clamp((query_pos - pA).dot(pAB) / plen_sq, 0.0, 1.0);
             corr_proj = pA + t_corr * pAB;
         }
-        r.proj_pts[k] = corr_proj;  // physical projection, NOT pos (lookahead)
 
-        // Advance expected robot position for the next step.
-        if (k < N)
+        r.seg_normals[k] = physical_normal;
+        r.proj_pts[k] = corr_proj;
+
+        // ── Reference position: SQP warm or polyline cold start ────────
+        if (use_pred && k + 1 <= N)
+        {
+            // Use prev_pred[k+1] as x_ref[k] if it is inside the trust gate.
+            // Gate is measured as distance from the corridor centreline so
+            // that only predictions already well within d_hard are inherited.
+            const Eigen::Vector2d pred_pos(
+                (*prev_pred)[k + 1].x,
+                (*prev_pred)[k + 1].y);
+            const double pred_cte =
+                std::abs(physical_normal.dot(pred_pos - corr_proj));
+
+            if (pred_cte < trust_dist)
+            {
+                // Within trust gate: use predicted position.
+                // Heading is always from the polyline tangent (stable
+                // geometric anchor; Stanley correction applied upstream).
+                r.x_ref[k] = {pred_pos.x(), pred_pos.y(), theta_ref};
+            }
+            else
+            {
+                // Outside trust gate: fall back to polyline for this step.
+                r.x_ref[k] = {polyline_pos.x(), polyline_pos.y(), theta_ref};
+            }
+        }
+        else
+        {
+            // Cold start, or terminal step k = N (no prev_pred[N+1]).
+            r.x_ref[k] = {polyline_pos.x(), polyline_pos.y(), theta_ref};
+        }
+
+        // ── Advance cold-start accumulator for the next step ──────────
+        //
+        // In SQP warm mode this accumulator is not used for the bisector
+        // test (query_pos comes from prev_pred), so we skip the update to
+        // avoid unnecessary computation.  We still advance it as a fallback
+        // in case use_pred becomes false mid-horizon, though with a fully
+        // valid prev_pred that cannot happen within a single call.
+        if (k < N && !use_pred)
         {
             expected_robot_pos += active_dir * (r.v_profile[k] * dt);
         }

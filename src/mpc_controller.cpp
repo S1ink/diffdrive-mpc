@@ -51,7 +51,8 @@ void MPCController::reset()
     projector_.reset();
     u_prev_ = {0.0, 0.0};
     has_prev_ref_ = false;
-    path_hash_ = 0;
+    path_horizon_hash_ = 0;
+    pred_valid_ = false;
     debug_info_ = DebugInfo{};
 }
 
@@ -73,17 +74,21 @@ size_t MPCController::pruneTraversedSegments(Path& path)
 
 // ── Path hash ─────────────────────────────────────────────────────────────────
 
-size_t MPCController::hashPath(const Path& path)
+size_t MPCController::hashPath(const Path& path, size_t to_pt)
 {
-    // FNV-1a-inspired mix over all waypoint coordinates.
-    // Fast and collision-resistant enough for detecting path identity changes.
-    size_t h = std::hash<size_t>{}(path.size());
-    for (const auto& pt : path.pts)
+    // FNV-1a-inspired mix over the window [0, to_pt).
+    // Including `to_pt` in the seed ensures that a path that is merely
+    // truncated (same prefix, fewer points) hashes differently from the
+    // original — important for detecting when pruneTraversedSegments removes
+    // segments that fall inside the horizon window.
+    const size_t window = std::min(to_pt, path.size());
+    size_t h = std::hash<size_t>{}(window);
+    for (size_t i = 0; i < window; ++i)
     {
-        h ^=
-            std::hash<double>{}(pt.pos.x()) + 0x9e3779b9u + (h << 6) + (h >> 2);
-        h ^=
-            std::hash<double>{}(pt.pos.y()) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= std::hash<double>{}(path.pts[i].pos.x()) + 0x9e3779b9u + (h << 6) +
+             (h >> 2);
+        h ^= std::hash<double>{}(path.pts[i].pos.y()) + 0x9e3779b9u + (h << 6) +
+             (h >> 2);
     }
     return h;
 }
@@ -103,24 +108,33 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── A. Trust measured state; predict forward by one dt ────────────
     const State x_pred = latencyCompensate(x_measured);
 
-    // ── C1. Path change detection (hash-based) ────────────────────────
+    // ── C1. Horizon-aware path change detection ────────────────────────
     //
-    // Compare the full path geometry each cycle.  On any change we reset
-    // the projector so segment tracking restarts from 0 via bisector
-    // traversal.  This is more reliable than the previous jump-distance
-    // heuristic, which could miss in-place path modifications and trigger
-    // spuriously on normal path progress.
+    // We hash only the path points from [0, cur_seg + N + margin], not the
+    // full path.  This means:
+    //   • Segments appended BEYOND the horizon (e.g. from online mapping)
+    //     do not trigger a reset — they simply haven't entered the window yet.
+    //   • Any modification to geometry WITHIN the horizon is detected and
+    //     causes a full projector reset + prediction invalidation.
     //
-    // v_cur (= u_prev_.v) is robot state and is intentionally preserved
-    // across path changes so the velocity profile seeds from a realistic
-    // initial speed.
-    const size_t new_hash = hashPath(path);
-    const bool path_changed = !has_prev_ref_ || (new_hash != path_hash_);
-    if (path_changed)
+    // projector_.lastSegment() reflects the segment matched at the END of the
+    // previous cycle, which is the correct anchor for this cycle's window.
+    const size_t cur_seg = projector_.lastSegment();
+    const size_t hash_window =
+        cur_seg + static_cast<size_t>(params_.N) +
+        static_cast<size_t>(params_.path_horizon_hash_margin) +
+        1;  // +1: include the far endpoint of the last horizon segment
+
+    const size_t new_horizon_hash = hashPath(path, hash_window);
+    const bool horizon_changed =
+        !has_prev_ref_ || (new_horizon_hash != path_horizon_hash_);
+
+    if (horizon_changed)
     {
         projector_.reset();
+        pred_valid_ = false;
     }
-    path_hash_ = new_hash;
+    path_horizon_hash_ = new_horizon_hash;
 
     const ProjectionResult proj = projector_.project(x_pred, path);
 
@@ -138,11 +152,35 @@ Control MPCController::update(const State& x_measured, const Path& path)
         params_.v_min_scale,
         1.0);
 
+    // ── H1. Prediction health check ────────────────────────────────────
+    //
+    // If the one-step prediction error (distance between where we predicted
+    // the robot would be and where it actually is) exceeds the threshold,
+    // the linearisation model has diverged — invalidate the prediction so
+    // we cold-start from the polyline this cycle.
+    if (pred_valid_ && (int)debug_info_.pred_traj.size() >= 2)
+    {
+        const double pred_error = std::hypot(
+            x_pred.x - debug_info_.pred_traj[1].x,
+            x_pred.y - debug_info_.pred_traj[1].y);
+        const double threshold = (params_.pred_reset_dist > 0.0)
+                                     ? params_.pred_reset_dist
+                                     : 0.5 * params_.d_hard;
+        if (pred_error > threshold)
+        {
+            pred_valid_ = false;
+        }
+    }
+
     // ── C2. Generate reference, seeded with the robot's current speed ──
     //
-    // Passing u_prev_.v as v_cur seeds the look-ahead braking integrator
-    // at the actual robot speed, giving a kinematically-continuous profile.
-    Reference new_ref = ref_gen_.generate(path, proj, u_prev_.v);
+    // Pass the previous predicted trajectory when valid so the generator
+    // can use it as the reference positions and for corridor segment
+    // assignment.  nullptr triggers a polyline cold start.
+    const std::vector<State>* pred_ptr =
+        pred_valid_ ? &debug_info_.pred_traj : nullptr;
+
+    Reference new_ref = ref_gen_.generate(path, proj, u_prev_.v, pred_ptr);
     for (double& v : new_ref.v_profile)
     {
         v *= v_scale;
@@ -190,10 +228,10 @@ Control MPCController::update(const State& x_measured, const Path& path)
 
     // ── C2. Blend with previous reference to smooth same-path updates ──
     //
-    // Blending is suppressed when the path has changed: applying the old
-    // reference geometry to new corridor normals produces incorrect QP
+    // Blending is suppressed when the horizon geometry has changed: applying
+    // the old reference to new corridor normals produces incorrect QP
     // constraints, so the new reference is used as-is for that cycle.
-    const Reference ref = (has_prev_ref_ && !path_changed)
+    const Reference ref = (has_prev_ref_ && !horizon_changed)
                               ? blend(new_ref, ref_prev_, params_.blend_alpha)
                               : new_ref;
 
@@ -275,6 +313,8 @@ Control MPCController::update(const State& x_measured, const Path& path)
             debug_info_.seg_normals = ref_qp.seg_normals;
             debug_info_.proj_pts = ref_qp.proj_pts;
             debug_info_.v_profile = ref_qp.v_profile;
+            // Point-turn recovery: do not inherit prediction from this cycle.
+            pred_valid_ = false;
             u_prev_ = u_rec;
             return u_rec;
         }
@@ -294,7 +334,14 @@ Control MPCController::update(const State& x_measured, const Path& path)
     ctx.Q_theta_terminal_eff = Q_theta_terminal_eff;
     ctx.near_goal = near;
 
-    // ── H. Linearise around previous predicted trajectory (SQP step) ──
+    // ── H2. Linearise around previous predicted trajectory (SQP step) ──
+    //
+    // lin_traj: use previous prediction when valid (better operating point
+    //   near corners than a polyline sample).
+    // lin_ctrl: derive omega from the heading change between consecutive
+    //   prediction states so the A/B matrices are accurate at turns.
+    //   Previously omega was hardcoded to 0, which degraded accuracy whenever
+    //   the trajectory curved.
     const int N = params_.N;
     std::vector<State> lin_traj(N);
     std::vector<Control> lin_ctrl(N);
@@ -304,7 +351,26 @@ Control MPCController::update(const State& x_measured, const Path& path)
         for (int k = 0; k < N; ++k)
         {
             lin_traj[k] = have_prev_pred ? prev_pred[k] : ref.x_ref[k];
-            lin_ctrl[k] = {ref.v_profile[k], 0.0};
+
+            double omega_k = 0.0;
+            if (have_prev_pred && k + 1 < (int)prev_pred.size())
+            {
+                double dth = prev_pred[k + 1].theta - prev_pred[k].theta;
+                while (dth > M_PI)
+                {
+                    dth -= 2.0 * M_PI;
+                }
+                while (dth < -M_PI)
+                {
+                    dth += 2.0 * M_PI;
+                }
+                omega_k = std::clamp(
+                    dth / params_.dt,
+                    -params_.omega_max,
+                    params_.omega_max);
+            }
+
+            lin_ctrl[k] = {ref.v_profile[k], omega_k};
         }
     }
     const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
@@ -312,6 +378,9 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── Build QP and solve with wall-clock timing ────────────────────
     const QP qp = qp_builder_.build(x_pred, u_prev_, ref_qp, model, ctx);
     const bool ok = solver_.update(qp, N);
+
+    // ── H3. Update prediction validity for next cycle ─────────────────
+    pred_valid_ = ok;
 
     // ── Populate debug snapshot ────────────────────────────────────────
     debug_info_.solver_ok = ok;

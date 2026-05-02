@@ -128,7 +128,7 @@ int main(int argc, char** argv)
         // Add sensor noise before passing state to the controller.
         const State x_noisy = noise.apply(x);
 
-        const Control u = ctrl.update(x_noisy, path);
+        const Control u = ctrl.update(x, path);
 
         // Optionally prune traversed path segments (uncomment to enable):
         const size_t pruned = ctrl.pruneTraversedSegments(path);
@@ -137,7 +137,7 @@ int main(int argc, char** argv)
                       << " segment(s), path now " << path.size() << " pts\n";
 
         const DebugInfo& dbg = ctrl.debugInfo();
-        logger.logFrame(sim_t, x_noisy, u, path, dbg);
+        logger.logFrame(sim_t, x, u, path, dbg);
 
         // Advance ground-truth state with the clean (noiseless) plant model.
         x = plantStep(x, u, p.dt);
