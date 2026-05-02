@@ -364,8 +364,125 @@ def make_update(frames, arts, params, pre):
     return update
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Interactive playback  (pause / scrub)
+# ─────────────────────────────────────────────────────────────────────────────
+def run_interactive(fig, frames, arts, params, pre, fps):
+    from matplotlib.widgets import Slider
+
+    n          = len(frames)
+    t_arr      = pre["t"]
+    update_fn  = make_update(frames, arts, params, pre)
+    interval   = int(1000 / fps)
+
+    # Push subplots up to make room for the slider
+    fig.subplots_adjust(bottom=0.08)
+
+    ax_sl = fig.add_axes([0.08, 0.025, 0.88, 0.022], facecolor=C["bg_ax"])
+    slider = Slider(ax_sl, '', 0, n - 1, valinit=0, valstep=1,
+                    color=C["v_line"], initcolor="none")
+    slider.label.set_color(C["tick"])      # type: ignore[attr-defined]
+    slider.valtext.set_color(C["tick"])    # type: ignore[attr-defined]
+    slider.valtext.set_fontsize(7)         # type: ignore[attr-defined]
+    for spine in ax_sl.spines.values():
+        spine.set_edgecolor(C["spine"])
+
+    fig.text(0.5, 0.003,
+             "SPACE: pause / play   ←/→: step frame   HOME/END: jump to start/end",
+             ha="center", va="bottom", fontsize=7, color=C["tick"])
+
+    state    = {"fi": 0, "playing": True}
+    _busy    = [False]
+
+    def _draw(fi):
+        if _busy[0]:
+            return
+        _busy[0] = True
+        state["fi"] = fi
+        slider.set_val(fi)
+        slider.valtext.set_text(f"t = {t_arr[fi]:.2f} s  [{fi} / {n - 1}]")  # type: ignore[attr-defined]
+        _busy[0] = False
+        update_fn(fi)
+        fig.canvas.draw_idle()
+
+    def _tick():
+        if not state["playing"]:
+            return
+        nfi = state["fi"] + 1
+        if nfi >= n:
+            state["playing"] = False
+            return
+        _draw(nfi)
+
+    def _on_slider(val):
+        if _busy[0]:
+            return
+        state["playing"] = False
+        _draw(int(round(val)))
+
+    def _on_key(event):
+        k = event.key
+        if k == " ":
+            state["playing"] = not state["playing"]
+            if state["playing"] and state["fi"] >= n - 1:
+                state["fi"] = 0
+        elif k == "left":
+            state["playing"] = False
+            _draw(max(0, state["fi"] - 1))
+        elif k == "right":
+            state["playing"] = False
+            _draw(min(n - 1, state["fi"] + 1))
+        elif k == "home":
+            state["playing"] = False
+            _draw(0)
+        elif k == "end":
+            state["playing"] = False
+            _draw(n - 1)
+
+    slider.on_changed(_on_slider)
+    fig.canvas.mpl_connect("key_press_event", _on_key)
+
+    timer = fig.canvas.new_timer(interval=interval)
+    timer.add_callback(_tick)
+    timer.start()
+
+    _draw(0)
+    plt.show()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
+def _print_stats(frames, params):
+    import numpy as np
+    ctes   = np.array([abs(f.get("cte", 0)) for f in frames])
+    vs     = np.array([f["control"]["v"]     for f in frames])
+    robots = np.array([[f["robot"]["x"], f["robot"]["y"]] for f in frames])
+    n      = len(frames)
+    t_end  = frames[-1].get("t", n * params.get("dt", 0.05))
+    last   = frames[-1]
+
+    print(f"Frames : {n}   sim_time : {t_end:.2f}s")
+    print(f"Final  : x={last['robot']['x']:.4f}  y={last['robot']['y']:.4f}  "
+          f"θ={last['robot']['theta']:.4f}  v={last['control']['v']:.4f}")
+    print(f"CTE    : max={ctes.max():.4f}  mean={ctes.mean():.4f}  "
+          f"p95={np.percentile(ctes,95):.4f}  m")
+    print(f"Speed  : mean={vs.mean():.4f}  max={vs.max():.4f}  min={vs.min():.4f}  m/s")
+
+    # Corner analysis: frames where robot is near x=2 (corner zone)
+    corner = [f for f in frames if 1.6 <= f["robot"]["x"] <= 2.4 and f["robot"]["y"] <= 0.6]
+    if corner:
+        c_cte = [abs(f.get("cte", 0)) for f in corner]
+        print(f"Corner : {len(corner)} frames  max_cte={max(c_cte):.4f}m  "
+              f"mean_v={sum(f['control']['v'] for f in corner)/len(corner):.4f} m/s")
+
+    # Last 10% of frames for goal approach
+    tail = frames[int(n * 0.9):]
+    t_vs = [f["control"]["v"] for f in tail]
+    print(f"Final10%: mean_v={sum(t_vs)/len(t_vs):.4f}  min_v={min(t_vs):.4f} m/s")
+    solver_fails = sum(1 for f in frames if not f.get("solver_ok", True))
+    print(f"Solver fails: {solver_fails}/{n}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary",   help="Path to C++ sim binary")
@@ -376,6 +493,7 @@ def main():
     ap.add_argument("--draw",     action="store_true", help="Draw path interactively")
     ap.add_argument("--fps",      type=int, default=20)
     ap.add_argument("--save",     help="Save animation to file (MP4 or GIF)")
+    ap.add_argument("--stats",    action="store_true", help="Print text summary instead of animating")
     args = ap.parse_args()
 
     if args.draw:
@@ -396,6 +514,10 @@ def main():
 
     if not frames:
         sys.exit("No frames parsed.")
+
+    if args.stats:
+        _print_stats(frames, params)
+        return
 
     pre = precompute(frames, params)
 
@@ -428,18 +550,17 @@ def main():
                     facecolor=C["bg_ax"], edgecolor=C["spine"], labelcolor=C["tick"])
 
     arts = init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, params)
-    update_fn = make_update(frames, arts, params, pre)
-
-    ani = animation.FuncAnimation(
-        fig, update_fn, frames=len(frames),
-        interval=int(1000 / args.fps), blit=False, repeat=False)
 
     if args.save:
+        update_fn = make_update(frames, arts, params, pre)
+        ani = animation.FuncAnimation(
+            fig, update_fn, frames=len(frames),
+            interval=int(1000 / args.fps), blit=False, repeat=False)
         print(f"[plot_sim] Saving animation to {args.save} …", file=sys.stderr)
         ani.save(args.save, dpi=150)
         print("[plot_sim] Done.", file=sys.stderr)
     else:
-        plt.show()
+        run_interactive(fig, frames, arts, params, pre, args.fps)
 
 if __name__ == "__main__":
     main()
