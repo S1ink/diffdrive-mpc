@@ -83,7 +83,7 @@ struct MPCParams
     // ── Velocity reduction under error ────────────────────────────────
     // v_ref_k *= clamp(1 − v_error_gain * |cte|,  v_min_scale, 1)
     double v_error_gain = 3.0;
-    double v_min_scale = 1.0;  // 0 allows full stop for point-turn recovery
+    double v_min_scale = 0.0;  // 0 allows full stop for point-turn recovery
 
     // ── Reference blending ────────────────────────────────────────────
     // Smooths abrupt same-path numerical jitter: ref = α·new + (1−α)·old.

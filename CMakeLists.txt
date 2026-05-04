@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(dd_mpc)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ── Detect build environment ─────────────────────────────────────────────────
@@ -28,6 +28,7 @@ add_library(mpc_core
     src/solver.cpp
     src/qp_builder.cpp
     src/reference.cpp
+    src/path_smoother.cpp
     src/projection.cpp
     src/linearization.cpp
 )
