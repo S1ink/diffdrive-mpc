@@ -152,7 +152,15 @@ Reference ReferenceGenerator::generate(
     // minimum always lands on the correct forward position.  If a pathological
     // hairpin is possible in your application, the caller can add a monotone
     // floor by passing the previous s0 as an additional argument.
-    const auto [s0, _smooth_proj] = sp.project(robot_pos);
+    const auto [s0, smooth_proj] = sp.project(robot_pos);
+
+    // CTE measured against the smooth arc, not the raw polyline.
+    // At corners the smooth projection stays on the arc, so this avoids the
+    // inflated CTE that the raw-polyline projector produces during a turn.
+    {
+        const PathSmoother::SmoothSample s = sp.sampleAt(s0, params_.v_max);
+        r.cte = s.normal.dot(robot_pos - smooth_proj);
+    }
 
     // ── Edge case: robot already at or past path end ───────────────────
     if (s0 >= sp.total - 1e-6)

@@ -122,8 +122,20 @@ Control MPCController::update(const State& x_measured, const Path& path)
 
     const ProjectionResult proj = projector_.project(x_pred, path);
 
+    // ── C2. Generate reference, seeded with the robot's current speed ──
+    //
+    // Passing u_prev_.v as v_cur seeds the look-ahead braking integrator
+    // at the actual robot speed, giving a kinematically-continuous profile.
+    // new_ref.cte is measured against the smooth arc rather than the raw
+    // polyline, so corners don't produce spuriously large CTE values.
+    Reference new_ref = ref_gen_.generate(
+        path,
+        proj,
+        Eigen::Vector2d(x_pred.x, x_pred.y),
+        u_prev_.v);
+
     // ── D1+D3. Cross-track error with deadband ─────────────────────────
-    const double cte_raw = crossTrackError(x_pred, proj, path);
+    const double cte_raw = new_ref.cte;
     double cte = cte_raw;
     if (std::abs(cte) < params_.d_deadband)
     {
@@ -135,16 +147,6 @@ Control MPCController::update(const State& x_measured, const Path& path)
         1.0 - params_.v_error_gain * std::abs(cte),
         params_.v_min_scale,
         1.0);
-
-    // ── C2. Generate reference, seeded with the robot's current speed ──
-    //
-    // Passing u_prev_.v as v_cur seeds the look-ahead braking integrator
-    // at the actual robot speed, giving a kinematically-continuous profile.
-    Reference new_ref = ref_gen_.generate(
-        path,
-        proj,
-        Eigen::Vector2d(x_pred.x, x_pred.y),
-        u_prev_.v);
     for (double& v : new_ref.v_profile)
     {
         v *= v_scale;

@@ -20,6 +20,7 @@ struct Reference
         seg_normals;                        // unit normal to assigned segment
     std::vector<Eigen::Vector2d> proj_pts;  // corresponding point on the path
     std::vector<double> v_profile;          // adaptive reference speed [m/s]
+    double cte{0.0};  // signed cross-track error from smooth path [m]
 };
 
 class ReferenceGenerator
