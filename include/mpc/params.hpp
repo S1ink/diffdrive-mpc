@@ -32,7 +32,7 @@ struct MPCParams
     double omega_max = 1.5;  // max angular speed   [rad/s]
 
     // ── Acceleration limits ───────────────────────────────────────────
-    double a_max = 1.5;       // linear accel bound  [m/s²]
+    double a_max = 1.0;       // linear accel bound  [m/s²]
     double alpha_max = 5.0;  // angular accel bound [rad/s²]
 
     // ── Corridor / soft constraint ────────────────────────────────────
@@ -46,17 +46,7 @@ struct MPCParams
     double Q_xy_terminal = 50.0;    // elevated position weight at step N
     double Q_theta_terminal = 30.0;  // elevated heading weight  at step N
 
-    // ── Horizon weight decay ──────────────────────────────────────────────
-    // Tracking weights are multiplied by decay^k at horizon step k, so
-    // near-term reference tracking is penalised heavily and far-term lightly.
-    // The corridor constraint enforces d_hard at all steps regardless.
-    // Terminal weights (Q_xy_terminal, Q_theta_terminal) are unaffected —
-    // they already encode the "value function" role and should stay strong.
-    //
-    // q_xy_decay = 1.0 disables the feature (original flat weighting).
-    // Values around 0.90–0.95 are a good starting point.
-    double q_xy_decay = 1.0;     // per-step multiplier on Q_xy
-    double q_theta_decay = 1.0;  // per-step multiplier on Q_theta
+    // ── Horizon weight decay removed; per-step decay is fixed to 1.0.
 
     // ── Control cost ─────────────────────────────────────────────────
     double R_v = 0.0;      // effort on v
@@ -81,9 +71,7 @@ struct MPCParams
     double funnel_decay_tau = 5.0;
 
     // ── Velocity reduction under error ────────────────────────────────
-    // v_ref_k *= clamp(1 − v_error_gain * |cte|,  v_min_scale, 1)
-    double v_error_gain = 3.0;
-    double v_min_scale = 1.0;  // 0 allows full stop for point-turn recovery
+    // (Velocity reduction under lateral error removed)
 
     // ── Reference blending ────────────────────────────────────────────
     // Smooths abrupt same-path numerical jitter: ref = α·new + (1−α)·old.
@@ -110,30 +98,11 @@ struct MPCParams
     double stanley_k = 2.5;
     double stanley_v_min = 0.15;  // [m/s]
 
-    // ── Heading weight scaling ────────────────────────────────────────
-    // Q_theta_eff = Q_theta * exp(−heading_scale_k * |cte|)
-    //
-    // IMPORTANT: set to 0.0 (disabled) unless you have a specific reason
-    // to suppress heading cost at large CTE.  Suppressing heading weight
-    // when the robot is far off-path prevents the rotation needed for
-    // recovery and causes the robot to stop.  The Stanley correction above
-    // is the correct tool for guiding the heading during recovery.
-    double heading_scale_k = 0.0;
+    // (Heading-weight scaling removed)
 
     // ── Near-goal detection ───────────────────────────────────────────
     // When remaining path length drops below this, enforce v_N = 0.
     double goal_threshold = 0.03;  // [m]
-
-    // ── Recovery ─────────────────────────────────────────────────────────
-    // When the corrected reference heading at k=0 differs from the robot's
-    // current heading by more than this angle, the controller bypasses the QP
-    // entirely and issues a pure point-turn (v=0, omega=±omega_max) until the
-    // heading is within threshold.  This handles tight U-turns and the
-    // "robot facing entirely wrong direction" case that OSQP cannot resolve
-    // through gradient descent alone.
-    //
-    // Set to M_PI (180°) to disable.  100° is a good starting value.
-    // double recovery_heading_threshold = 100.0 * M_PI / 180.0;  // [rad]
 
     // ── nearGoal CTE gate ─────────────────────────────────────────────────
     // The terminal-velocity-zero constraint is only applied when the robot is

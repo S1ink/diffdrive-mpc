@@ -60,13 +60,11 @@ struct DebugInfo
     /// Positive = robot is to the left of the path.
     double cte_raw = 0.0;
 
-    /// Velocity reduction scale factor this cycle.
-    /// v_scale = clamp(1 − v_error_gain·|cte|,  v_min_scale, 1).
+    /// Velocity reduction scale factor this cycle (always 1.0 — no
+    /// lateral-speed scaling enabled).
     double v_scale = 1.0;
 
-    /// Effective heading weight Q_theta * exp(−heading_scale_k * |cte|).
-    /// Lower when the robot is far from the path so it converges laterally
-    /// before aligning heading.
+    /// Effective heading weight. (No adaptive scaling by cte applied.)
     double Q_theta_eff = 0.0;
 
     // ── Status flags ──────────────────────────────────────────────────

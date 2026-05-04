@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <functional>
 #include <iostream>
 
 namespace mpc
@@ -142,15 +141,8 @@ Control MPCController::update(const State& x_measured, const Path& path)
         cte = 0.0;
     }
 
-    // ── D2. Velocity scale under lateral error ─────────────────────────
-    const double v_scale = std::clamp(
-        1.0 - params_.v_error_gain * std::abs(cte),
-        params_.v_min_scale,
-        1.0);
-    for (double& v : new_ref.v_profile)
-    {
-        v *= v_scale;
-    }
+    // ── D2. Velocity scale under lateral error (removed)
+    // No per-cycle speed scaling; keep v_profile as generated.
 
     // ── Fix 1: Stanley heading correction ────────────────────────────
     //
@@ -211,15 +203,9 @@ Control MPCController::update(const State& x_measured, const Path& path)
         d_hard_eff = params_.d_hard * params_.adaptive_corridor_scale;
     }
 
-    // ── F1. Adaptive heading weight ────────────────────────────────────
-    //
-    // heading_scale_k defaults to 0.0 (disabled).  See params.hpp for why
-    // suppressing heading weight at large CTE is counterproductive.
-    const double Q_theta_eff =
-        params_.Q_theta * std::exp(-params_.heading_scale_k * std::abs(cte));
-    const double Q_theta_terminal_eff =
-        params_.Q_theta_terminal *
-        std::exp(-params_.heading_scale_k * std::abs(cte));
+    // ── F1. Heading weight (no adaptive scaling)
+    const double Q_theta_eff = params_.Q_theta;
+    const double Q_theta_terminal_eff = params_.Q_theta_terminal;
 
     // ── Normalise reference headings (heading-wrap fix) ─────────────────
     // Moved here so the recovery check below can read corrected heading at k=0.
@@ -240,49 +226,6 @@ Control MPCController::update(const State& x_measured, const Path& path)
             s.theta = anchor + d;
         }
     }
-
-    // ── Recovery: point-turn bypass ────────────────────────────────────────
-    //
-    // When the corrected reference heading at k=0 differs from x_pred.theta
-    // by more than recovery_heading_threshold the QP gradient is nearly flat
-    // and OSQP cannot converge to a useful command.  We bypass the solver and
-    // issue v=0, ω=±ω_max until the error falls below threshold.
-    //
-    // Handles: (1) tight U-turns; (2) path updates that place the remaining
-    // path entirely behind the robot (Stanley targets ~180° from heading).
-    // {
-    //     double h_err = ref_qp.x_ref[0].theta - x_pred.theta;
-    //     while (h_err > M_PI)
-    //     {
-    //         h_err -= 2.0 * M_PI;
-    //     }
-    //     while (h_err < -M_PI)
-    //     {
-    //         h_err += 2.0 * M_PI;
-    //     }
-
-    //     if (std::abs(h_err) > params_.recovery_heading_threshold)
-    //     {
-    //         const Control u_rec = {
-    //             0.0,
-    //             std::copysign(params_.omega_max, h_err)};
-    //         debug_info_.solver_ok = false;
-    //         debug_info_.solve_ms = 0.0;
-    //         debug_info_.cte_raw = cte_raw;
-    //         debug_info_.d_hard_eff = d_hard_eff;
-    //         debug_info_.v_scale = v_scale;
-    //         debug_info_.Q_theta_eff = Q_theta_eff;
-    //         debug_info_.near_goal = false;
-    //         debug_info_.proj_pt = proj.proj;
-    //         debug_info_.proj_segment_index = proj.segment_index;
-    //         debug_info_.ref_traj = ref_qp.x_ref;
-    //         debug_info_.seg_normals = ref_qp.seg_normals;
-    //         debug_info_.proj_pts = ref_qp.proj_pts;
-    //         debug_info_.v_profile = ref_qp.v_profile;
-    //         u_prev_ = u_rec;
-    //         return u_rec;
-    //     }
-    // }
 
     // ── C3. Near-goal detection ────────────────────────────────────────
     // Terminal-v=0 only when BOTH near the path end AND laterally close.
@@ -321,7 +264,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
     debug_info_.solver_ok = ok;
     debug_info_.cte_raw = cte_raw;
     debug_info_.d_hard_eff = d_hard_eff;
-    debug_info_.v_scale = v_scale;
+    debug_info_.v_scale = 1.0;  // no lateral-speed scaling
     debug_info_.Q_theta_eff = Q_theta_eff;
     debug_info_.near_goal = near;
     debug_info_.proj_pt = proj.proj;
