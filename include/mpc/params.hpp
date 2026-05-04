@@ -28,7 +28,7 @@ struct MPCParams
 
     // ── Velocity limits ───────────────────────────────────────────────
     double v_max = 1.2;      // max forward speed   [m/s]
-    double v_min = -0.0;     // min forward speed   [m/s]
+    double v_min = -0.1;     // min forward speed   [m/s]
     double omega_max = 1.5;  // max angular speed   [rad/s]
 
     // ── Acceleration limits ───────────────────────────────────────────
