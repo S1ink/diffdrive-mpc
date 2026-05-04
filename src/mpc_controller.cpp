@@ -140,7 +140,11 @@ Control MPCController::update(const State& x_measured, const Path& path)
     //
     // Passing u_prev_.v as v_cur seeds the look-ahead braking integrator
     // at the actual robot speed, giving a kinematically-continuous profile.
-    Reference new_ref = ref_gen_.generate(path, proj, u_prev_.v);
+    Reference new_ref = ref_gen_.generate(
+        path,
+        proj,
+        Eigen::Vector2d(x_pred.x, x_pred.y),
+        u_prev_.v);
     for (double& v : new_ref.v_profile)
     {
         v *= v_scale;

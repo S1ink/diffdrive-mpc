@@ -23,17 +23,17 @@ struct MPCParams
     // returns 30, so the effective N is raised from the nominal 15 to 30.
     // Override N here if you want a longer horizon; it will never be
     // silently shortened below minBrakingSteps().
-    int N = 15;
+    int N = 24;
     double dt = 0.05;  // timestep [s]  → 20 Hz
 
     // ── Velocity limits ───────────────────────────────────────────────
     double v_max = 1.2;      // max forward speed   [m/s]
-    double v_min = -0.1;     // min forward speed   [m/s]
-    double omega_max = 1.2;  // max angular speed   [rad/s]
+    double v_min = -0.0;     // min forward speed   [m/s]
+    double omega_max = 1.5;  // max angular speed   [rad/s]
 
     // ── Acceleration limits ───────────────────────────────────────────
-    double a_max = 5.0;       // linear accel bound  [m/s²]
-    double alpha_max = 10.0;  // angular accel bound [rad/s²]
+    double a_max = 1.5;       // linear accel bound  [m/s²]
+    double alpha_max = 5.0;  // angular accel bound [rad/s²]
 
     // ── Corridor / soft constraint ────────────────────────────────────
     double d_hard = 0.05;  // hard corridor half-width [m]
@@ -43,8 +43,8 @@ struct MPCParams
     // ── Tracking cost ─────────────────────────────────────────────────
     double Q_xy = 20.0;             // position weight (intermediate steps)
     double Q_theta = 20.0;          // heading weight  (intermediate steps)
-    double Q_xy_terminal = 80.0;    // elevated position weight at step N
-    double Q_theta_terminal = 8.0;  // elevated heading weight  at step N
+    double Q_xy_terminal = 50.0;    // elevated position weight at step N
+    double Q_theta_terminal = 30.0;  // elevated heading weight  at step N
 
     // ── Horizon weight decay ──────────────────────────────────────────────
     // Tracking weights are multiplied by decay^k at horizon step k, so
@@ -59,12 +59,12 @@ struct MPCParams
     double q_theta_decay = 1.0;  // per-step multiplier on Q_theta
 
     // ── Control cost ─────────────────────────────────────────────────
-    double R_v = 0.5;      // effort on v
-    double R_omega = 0.5;  // effort on ω
+    double R_v = 0.0;      // effort on v
+    double R_omega = 0.0;  // effort on ω
 
     // ── Smoothness cost (penalises Δu between consecutive steps) ──────
-    double R_rate_v = 2.0;      // weight on (v_k − v_{k-1})²
-    double R_rate_omega = 2.0;  // weight on (ω_k − ω_{k-1})²
+    double R_rate_v = 0.5;      // weight on (v_k − v_{k-1})²
+    double R_rate_omega = 0.5;  // weight on (ω_k − ω_{k-1})²
 
     // ── Noise deadband ────────────────────────────────────────────────
     double d_deadband = 0.015;  // ignore tracking errors below this [m]
@@ -83,7 +83,7 @@ struct MPCParams
     // ── Velocity reduction under error ────────────────────────────────
     // v_ref_k *= clamp(1 − v_error_gain * |cte|,  v_min_scale, 1)
     double v_error_gain = 3.0;
-    double v_min_scale = 0.0;  // 0 allows full stop for point-turn recovery
+    double v_min_scale = 1.0;  // 0 allows full stop for point-turn recovery
 
     // ── Reference blending ────────────────────────────────────────────
     // Smooths abrupt same-path numerical jitter: ref = α·new + (1−α)·old.
@@ -107,7 +107,7 @@ struct MPCParams
     // Recommended starting values: stanley_k ∈ [1.5, 4.0].
     // Larger values produce more aggressive rotation toward the path but
     // can over-correct at high speed; smaller values are gentler.
-    double stanley_k = 3.5;
+    double stanley_k = 2.5;
     double stanley_v_min = 0.15;  // [m/s]
 
     // ── Heading weight scaling ────────────────────────────────────────

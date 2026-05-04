@@ -29,15 +29,25 @@ public:
 
     /// Build a horizon-length reference starting from the current projection.
     ///
-    /// @param path   Current path polyline.
-    /// @param proj   Projection result for the robot's current (latency-
-    ///               compensated) position.
-    /// @param v_cur  Current robot forward speed [m/s].  Passed as the seed
-    ///               for the forward velocity integration so the profile is
-    ///               continuous across MPC cycles.  Default 0 (cold start).
+    /// @param path       Current path polyline.
+    /// @param proj       Projection result for the robot's current (latency-
+    ///                   compensated) position onto the raw polyline.
+    ///                   Used for seg_normals / proj_pts corridor geometry and
+    ///                   for the velocity-event search window.
+    /// @param robot_pos  Latency-compensated robot 2-D position [m].
+    ///                   Projected directly onto the smooth path to obtain the
+    ///                   arc-position seed s0.  Using the robot position rather
+    ///                   than proj.proj eliminates the s0 discontinuity that
+    ///                   occurred when the raw Projector crossed the bisector
+    ///                   plane at a corner and proj.proj jumped from one raw
+    ///                   segment to the next.
+    /// @param v_cur      Current robot forward speed [m/s].  Passed as the seed
+    ///                   for the forward velocity integration so the profile is
+    ///                   continuous across MPC cycles.  Default 0 (cold start).
     Reference generate(
         const Path& path,
         const ProjectionResult& proj,
+        const Eigen::Vector2d& robot_pos,
         double v_cur = 0.0) const;
 
 private:

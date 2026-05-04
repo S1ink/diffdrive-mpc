@@ -9,13 +9,32 @@
 //   bounded angular velocity ω_max.  The QP was then handed targets it could
 //   not reach within the horizon, causing the robot to stall.
 //
-// Fix:
+// Fix (first pass):
 //   A PathSmoother is built at the start of each generate() call.  It
 //   replaces each sharp corner with a circular arc whose radius is
 //   bounded by v_max/ω_max and fitted within the adjacent segment lengths
 //   via a multi-pass junction optimizer.  All reference positions, headings,
 //   corridor normals, and speed limits are then sampled from this smooth
 //   geometry instead of the raw polyline.
+//
+// Fix (second pass — this file):
+//   The arc-position seed s0 is now obtained by projecting the robot's actual
+//   2-D position directly onto the smooth path, rather than by projecting
+//   proj.proj (the closest point on the raw polyline) and then re-projecting
+//   that raw point onto the smooth path.
+//
+//   The old two-step approach caused a discrete jump in s0 whenever the
+//   stateful raw Projector crossed the bisector plane at a corner and advanced
+//   last_segment_: proj.proj would snap from a point near B on segment A→B to
+//   a point near B on segment B→C, moving s0 by as much as half the arc
+//   length in a single cycle (~½·r·θ, which can be ~0.8 m for typical corners).
+//   The horizon keypoints — which start from s0 — then shifted abruptly,
+//   producing a large discontinuity in the reference trajectory.
+//
+//   Projecting robot_pos directly onto the smooth path removes this artefact:
+//   the smooth path is C1 (position and tangent are continuous through arcs),
+//   so the nearest point on it to the robot changes continuously as the robot
+//   traverses the corner.
 //
 // What is preserved:
 //   • The forward velocity integration with look-ahead braking (§4 below) is
@@ -24,7 +43,8 @@
 //   • The seg_normals / proj_pts separation (physical corridor vs. lookahead
 //     reference) is preserved: expected_s tracks where the robot is expected
 //     to be on the smooth path, independently of the lookahead arc position.
-//   • The public API (signature of generate()) is unchanged.
+//   • The public API (signature of generate()) is unchanged except for the
+//     addition of the robot_pos parameter.
 // =============================================================================
 
 #include "mpc/reference.hpp"
@@ -71,6 +91,7 @@ double ReferenceGenerator::distToEnd(const Path& path, size_t idx, double t)
 Reference ReferenceGenerator::generate(
     const Path& path,
     const ProjectionResult& proj,
+    const Eigen::Vector2d& robot_pos,
     double v_cur) const
 {
     const int N = params_.N;
@@ -108,12 +129,30 @@ Reference ReferenceGenerator::generate(
 
     // ── 2. Arc position of the current robot projection ────────────────
     //
-    // proj.proj is the closest point on the RAW polyline to the robot.
-    // Projecting it onto the smooth path gives the corresponding arc
-    // position s0.  Since the smooth path deviates from the raw polyline
-    // only near corners (by at most one arc radius), this is accurate
-    // everywhere and exact between corners.
-    const auto [s0, _smooth_proj] = sp.project(proj.proj);
+    // Project the robot's actual 2-D position directly onto the smooth path
+    // to obtain the arc-position seed s0.
+    //
+    // The previous approach projected proj.proj (the closest point on the
+    // RAW polyline) onto the smooth path.  Near corners, that caused a
+    // discrete jump: when the raw Projector crossed the bisector plane and
+    // snapped last_segment_ from i to i+1, proj.proj moved discontinuously,
+    // pulling s0 forward by up to half an arc length in a single cycle.
+    //
+    // Using robot_pos instead eliminates the jump because:
+    //   • The smooth path is C1 (position and tangent are continuous through
+    //     the corner arc), so the nearest point on it to the robot changes
+    //     continuously as the robot traverses the corner.
+    //   • robot_pos is the latency-compensated state and changes by at most
+    //     v_max·dt ≈ 0.06 m per cycle, producing a proportionally small
+    //     change in s0.
+    //
+    // Note on backward-snapping: SmoothedPath::project() is a global
+    // nearest-neighbour search.  For paths without hairpin segments whose
+    // legs are closer together than the robot-to-path distance, the global
+    // minimum always lands on the correct forward position.  If a pathological
+    // hairpin is possible in your application, the caller can add a monotone
+    // floor by passing the previous s0 as an additional argument.
+    const auto [s0, _smooth_proj] = sp.project(robot_pos);
 
     // ── Edge case: robot already at or past path end ───────────────────
     if (s0 >= sp.total - 1e-6)
