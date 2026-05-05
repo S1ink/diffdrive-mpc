@@ -21,9 +21,8 @@ ProjectionResult Projector::project(const State& x, const Path& path)
         last_segment_ = path.size() - 2;
     }
 
-    // ── Angle-Bisector Advancement (Voronoi Partitioning) ─────────────
-    // Move forward through the path as long as the robot has crossed the
-    // angle bisector plane of the next waypoint.
+    // Angle-bisector advancement: advance while the robot crosses the
+    // bisector plane of the next waypoint.
     while (last_segment_ < path.size() - 2)
     {
         const Eigen::Vector2d A = path.pts[last_segment_].pos;
@@ -54,7 +53,7 @@ ProjectionResult Projector::project(const State& x, const Path& path)
         }
     }
 
-    // ── Final Projection onto the active segment ──────────────────────
+    // Final projection onto the active segment
     const Eigen::Vector2d A = path.pts[last_segment_].pos;
     const Eigen::Vector2d B = path.pts[last_segment_ + 1].pos;
     const Eigen::Vector2d AB = B - A;

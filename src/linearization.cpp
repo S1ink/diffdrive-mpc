@@ -28,8 +28,7 @@ LinModel Linearizer::linearize(
         Eigen::Matrix<double, 3, 2> B;
         B << std::cos(th) * dt, 0, std::sin(th) * dt, 0, 0, dt;
 
-        // Affine residual: d = f(x̄,ū) - A*x̄ - B*ū
-        // Simplifies to:
+        // Affine residual: d = f(x,u) - A*x - B*u (evaluated at linearization point)
         m.d[k] << v * std::sin(th) * th * dt, -v * std::cos(th) * th * dt, 0.0;
 
         m.A[k] = A;

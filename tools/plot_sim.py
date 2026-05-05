@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """
-plot_sim.py  —  MPC Path Follower Visualizer
-=============================================
+plot_sim.py - MPC Path Follower Visualizer
+=========================================
 
 Runs the C++ sim binary (or reads a saved .jsonl file), then plays back
-the results as a 20 Hz animation.  Six panels update together:
+the results as a 20 Hz animation. Six panels update together:
 
-    ┌─────────────────────────┬──────────────────────┐
-    │                         │   v(t)               │
-    │   Spatial XY            ├──────────────────────┤
-    │   (path, corridor,      │   ω(t)               │
-    │    robot, horizons)     ├──────────────────────┤
-    │                         │   Cross-track error  │
-    │                         ├──────────────────────┤
-    │                         │   Constraint ratios  │
-    │                         ├──────────────────────┤
-    │                         │   Solve time (ms)    │
-    └─────────────────────────┴──────────────────────┘
+    +-------------------------+----------------------+
+    |                         |   v(t)               |
+    |   Spatial XY            +----------------------+
+    |   (path, corridor,      |   omega(t)           |
+    |    robot, horizons)     +----------------------+
+    |                         |   Cross-track error  |
+    |                         +----------------------+
+    |                         |   Constraint ratios  |
+    |                         +----------------------+
+    |                         |   Solve time (ms)    |
+    +-------------------------+----------------------+
 
 New in this version
 -------------------
-  • solve_ms panel  — OSQP wall-clock time per cycle.
+  - solve_ms panel - OSQP wall-clock time per cycle.
       - Orange line for normal solves.
       - Red dots on frames where solver_ok=false (recovery / OSQP failure).
-  • solver_fail vertical bands on v(t), ω(t), CTE panels.
-  • Path segment pruning supported: the path array can shrink mid-run.
+    - solver_fail vertical bands on v(t), omega(t), CTE panels.
+  - Path segment pruning supported: the path array can shrink mid-run.
 
 Usage
 -----
@@ -49,9 +49,9 @@ import matplotlib.gridspec as gridspec
 import matplotlib.animation as animation
 from matplotlib.patches import Polygon as MplPolygon
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Colour palette (dark theme)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 C = {
     "bg_fig":        "#12121f",
     "bg_ax":         "#0d0d1a",
@@ -79,9 +79,9 @@ C = {
     "recover_band":  "#ff220022",  # semi-transparent red for recovery spans
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Interactive Drawing Tool
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def draw_path_interactive():
     fig, ax = plt.subplots(figsize=(8, 8))
     pts = []
@@ -111,16 +111,16 @@ def draw_path_interactive():
     plt.show()
     return pts
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Data loading
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def load_from_binary(binary_path: str, args):
     cmd = [binary_path]
     if args.scenario: cmd.extend(["--scenario", str(args.scenario)])
     if args.path: cmd.extend(["--path", args.path])
     if getattr(args, "noisy", False):
         cmd.append("--noisy")
-    print(f"[plot_sim] Running {' '.join(cmd)} …", file=sys.stderr)
+    print(f"[plot_sim] Running {' '.join(cmd)}...", file=sys.stderr)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         sys.exit(f"Binary failed:\n{result.stderr}")
@@ -146,9 +146,9 @@ def _parse_lines(lines):
             continue
     return params, frames
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Geometry helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def corridor_polygon(pts: np.ndarray, d: float, max_miter: float = 5.0):
     """Corridor polygon with proper miter joints at corners."""
     n = len(pts)
@@ -158,7 +158,7 @@ def corridor_polygon(pts: np.ndarray, d: float, max_miter: float = 5.0):
     segs = pts[1:] - pts[:-1]
     lengths = np.linalg.norm(segs, axis=1, keepdims=True)
     dirs = np.where(lengths > 1e-9, segs / lengths, np.array([[1.0, 0.0]]))
-    # Left normal: rotate 90° CCW
+    # Left normal: rotate 90 deg CCW
     normals = np.column_stack([-dirs[:, 1], dirs[:, 0]])  # (n-1, 2)
 
     left, right = [], []
@@ -172,7 +172,7 @@ def corridor_polygon(pts: np.ndarray, d: float, max_miter: float = 5.0):
             miter = n1 + n2
             ml = np.linalg.norm(miter)
             if ml < 1e-9:
-                nv = n1  # 180° reversal
+                nv = n1  # 180 deg reversal
             else:
                 miter_u = miter / ml
                 denom = float(np.dot(miter_u, n1))
@@ -198,9 +198,9 @@ def compute_xy_bounds(frames, pad=0.8, min_span=4.0):
     if y1-y0 < min_span: cy=(y0+y1)/2; y0,y1 = cy-min_span/2, cy+min_span/2
     return (x0-pad, x1+pad, y0-pad, y1+pad)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Figure construction  (5 right-column panels)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def build_figure():
     fig = plt.figure(figsize=(16, 10), facecolor=C["bg_fig"])
     gs = gridspec.GridSpec(
@@ -257,7 +257,7 @@ def init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, params):
     arts["w_line"],   = ax_w.plot([],   [], color=C["w_line"])
     arts["cte_line"], = ax_cte.plot([], [], color=C["cte_line"])
 
-    arts["con_w"],   = ax_con.plot([], [], color=C["w_line"],   label="|ω| / ω_max")
+    arts["con_w"],   = ax_con.plot([], [], color=C["w_line"],   label="|omega| / omega_max")
     arts["con_cte"], = ax_con.plot([], [], color=C["cte_line"], label="|CTE| / d_hard")
     ax_con.axhline(1.0, color=C["v_max"], linestyle="--", linewidth=1.0)
     ax_con.legend(loc="upper left", fontsize=7,
@@ -278,9 +278,9 @@ def init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, params):
 
     return arts
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Pre-compute per-frame data arrays (done once, not per animation frame)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def precompute(frames, params):
     n = len(frames)
     d = {
@@ -304,9 +304,9 @@ def precompute(frames, params):
         d["ok"][i]       = f.get("solver_ok", True)
     return d
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Animation update
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def make_update(frames, arts, params, pre):
     d_hard = params.get("d_hard", 0.10)
     w_max  = params.get("omega_max", 1.2)
@@ -365,9 +365,9 @@ def make_update(frames, arts, params, pre):
         return []
     return update
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Interactive playback  (pause / scrub)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def run_interactive(fig, frames, arts, params, pre, fps):
     from matplotlib.widgets import Slider
 
@@ -389,7 +389,7 @@ def run_interactive(fig, frames, arts, params, pre, fps):
         spine.set_edgecolor(C["spine"])
 
     fig.text(0.5, 0.003,
-             "SPACE: pause / play   ←/→: step frame   HOME/END: jump to start/end",
+             "SPACE: pause / play   Left/Right: step frame   HOME/END: jump to start/end",
              ha="center", va="bottom", fontsize=7, color=C["tick"])
 
     state    = {"fi": 0, "playing": True}
@@ -451,9 +451,9 @@ def run_interactive(fig, frames, arts, params, pre, fps):
     plt.show()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
 def _print_stats(frames, params):
     import numpy as np
     ctes   = np.array([abs(f.get("cte", 0)) for f in frames])
@@ -465,7 +465,7 @@ def _print_stats(frames, params):
 
     print(f"Frames : {n}   sim_time : {t_end:.2f}s")
     print(f"Final  : x={last['robot']['x']:.4f}  y={last['robot']['y']:.4f}  "
-          f"θ={last['robot']['theta']:.4f}  v={last['control']['v']:.4f}")
+            f"theta={last['robot']['theta']:.4f}  v={last['control']['v']:.4f}")
     print(f"CTE    : max={ctes.max():.4f}  mean={ctes.mean():.4f}  "
           f"p95={np.percentile(ctes,95):.4f}  m")
     print(f"Speed  : mean={vs.mean():.4f}  max={vs.max():.4f}  min={vs.min():.4f}  m/s")
@@ -559,7 +559,7 @@ def main():
         ani = animation.FuncAnimation(
             fig, update_fn, frames=len(frames),
             interval=int(1000 / args.fps), blit=False, repeat=False)
-        print(f"[plot_sim] Saving animation to {args.save} …", file=sys.stderr)
+        print(f"[plot_sim] Saving animation to {args.save} ...", file=sys.stderr)
         ani.save(args.save, dpi=150)
         print("[plot_sim] Done.", file=sys.stderr)
     else:

@@ -1,5 +1,5 @@
 // =============================================================================
-// sim_utils.cpp  —  Simulation testing utilities (see sim_utils.hpp)
+// sim_utils.cpp - Simulation testing utilities (see sim_utils.hpp)
 // =============================================================================
 
 #include "sim_utils.hpp"
@@ -16,7 +16,7 @@ namespace mpc
 namespace sim
 {
 
-// ── Plant model ───────────────────────────────────────────────────────────────
+// Plant model
 
 State plantStep(const State& x, const Control& u, double dt)
 {
@@ -24,11 +24,11 @@ State plantStep(const State& x, const Control& u, double dt)
         x.x + u.v * std::cos(x.theta) * dt,
         x.y + u.v * std::sin(x.theta) * dt,
         x.theta + u.omega * dt};
-}
+    }
 
-// ── Path factories ────────────────────────────────────────────────────────────
+    // Path factories
 
-Path makeStraightPath(double x_start, double x_end, double y, int pts)
+    Path makeStraightPath(double x_start, double x_end, double y, int pts)
 {
     Path p;
     for (int i = 0; i <= pts; ++i)
@@ -77,7 +77,7 @@ Path loadPathFromFile(const std::string& filepath)
     return p;
 }
 
-// ── StateNoise ────────────────────────────────────────────────────────────────
+// State noise
 
 StateNoise::StateNoise(const StateNoiseParams& params, unsigned int seed) :
     gen_(seed),
@@ -94,7 +94,7 @@ State StateNoise::apply(const State& x)
         x.theta + ang_dist_(gen_)};
 }
 
-// ── StuckDetector ─────────────────────────────────────────────────────────────
+// Stuck detector
 
 StuckDetector::StuckDetector(const StuckDetectorParams& params) :
     params_(params)
@@ -136,7 +136,7 @@ bool StuckDetector::isStuck(double dt) const
     return (net_disp < params_.dist_m) && (avg_speed < params_.speed_mps);
 }
 
-// ── FrameLogger ───────────────────────────────────────────────────────────────
+// Frame logger
 
 FrameLogger::FrameLogger(const std::string& filepath)
 {
@@ -152,7 +152,7 @@ void FrameLogger::logParams(const MPCParams& p, int max_steps)
 {
     std::ostringstream ss;
     ss << "{\"params\":{"
-       << "\"N\":" << p.N << ",\"dt\":" << p.dt //<< ",\"v_ref\":" << p.v_ref
+       << "\"N\":" << p.N << ",\"dt\":" << p.dt  //<< ",\"v_ref\":" << p.v_ref
        << ",\"v_max\":" << p.v_max << ",\"omega_max\":" << p.omega_max
        << ",\"d_hard\":" << p.d_hard << ",\"max_steps\":" << max_steps << "}}";
 
@@ -180,7 +180,7 @@ void FrameLogger::logFrame(
     }
 }
 
-// ── FrameLogger internals ─────────────────────────────────────────────────────
+// FrameLogger internals
 
 void FrameLogger::jd(std::ostream& s, double v, int prec)
 {

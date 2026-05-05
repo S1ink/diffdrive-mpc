@@ -1,11 +1,11 @@
 // =============================================================================
-// sim_main.cpp  —  Differential-drive MPC simulation entry point
+// sim_main.cpp - Differential-drive MPC simulation entry point
 //
 // All debug logging, noise injection, stuck detection, JSON formatting, and
 // path helpers live in sim_utils.hpp / sim_utils.cpp.  This file is
 // responsible only for:
 //   1. CLI parsing and scenario / path selection.
-//   2. The top-level simulation loop: update → log → step → terminate.
+//   2. The top-level simulation loop: update -> log -> step -> terminate.
 // =============================================================================
 
 #include <cmath>
@@ -24,16 +24,16 @@ using namespace mpc::sim;
 
 int main(int argc, char** argv)
 {
-    // ── Controller parameters ─────────────────────────────────────────────
+    // Controller parameters
     MPCParams p;
     MPCController ctrl(p);
-    // p.N may have been raised by the controller — use ctrl.debugInfo() or
+    // p.N may have been raised by the controller - use ctrl.debugInfo() or
     // re-read p after construction if you need the effective value.
 
-    // ── Simulation termination limits ─────────────────────────────────────
+    // Simulation termination limits
     static constexpr int MAX_STEPS = 10000;
 
-    // ── CLI parsing ───────────────────────────────────────────────────────
+    // CLI parsing
     int scenario = 0;
     std::string custom_path_file;
     bool noisy = false;
@@ -55,7 +55,7 @@ int main(int argc, char** argv)
         }
     }
 
-    // ── Initial robot state and path ──────────────────────────────────────
+    // Initial robot state and path
     State x = {0.0, 0.25, 0.1};
     Path path;
 
@@ -95,14 +95,14 @@ int main(int argc, char** argv)
         }
     }
 
-    // ── Testing utilities ─────────────────────────────────────────────────
+    // Testing utilities
     StateNoise noise;
     StuckDetector stuck;
     FrameLogger logger("sim_data.jsonl");
 
     logger.logParams(p, MAX_STEPS);
 
-    // ── Simulation loop ───────────────────────────────────────────────────
+    // Simulation loop
     for (int step = 0; step < MAX_STEPS; ++step)
     {
         const double sim_t = step * p.dt;
@@ -123,8 +123,10 @@ int main(int argc, char** argv)
         // Optionally prune traversed path segments (uncomment to enable):
         const size_t pruned = ctrl.pruneTraversedSegments(path);
         if (pruned > 0)
+        {
             std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
                       << " segment(s), path now " << path.size() << " pts\n";
+        }
 
         const DebugInfo& dbg = ctrl.debugInfo();
         logger.logFrame(sim_t, x_noisy, u, path, dbg);
@@ -132,7 +134,7 @@ int main(int argc, char** argv)
         // Advance ground-truth state with the clean (noiseless) plant model.
         x = plantStep(x, u, p.dt);
 
-        // ── Termination: goal reached ──────────────────────────────────
+        // Termination: goal reached
         if (dbg.near_goal)
         {
             std::cerr << "[sim] Goal reached at t=" << sim_t + p.dt
@@ -140,7 +142,7 @@ int main(int argc, char** argv)
             break;
         }
 
-        // ── Termination: robot stuck ───────────────────────────────────
+        // Termination: robot stuck
         stuck.update(x);
         if (stuck.isStuck(p.dt))
         {

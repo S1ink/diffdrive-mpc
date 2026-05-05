@@ -1,11 +1,9 @@
 #pragma once
 
-#include "types.hpp"
-
 #include <Eigen/Dense>
-
 #include <vector>
 
+#include "types.hpp"
 
 namespace mpc
 {
@@ -14,7 +12,7 @@ struct LinModel
 {
     std::vector<Eigen::Matrix3d> A;
     std::vector<Eigen::Matrix<double, 3, 2>> B;
-    std::vector<Eigen::Vector3d> d;  // ← affine residual
+    std::vector<Eigen::Vector3d> d;  // affine residual
 };
 
 class Linearizer

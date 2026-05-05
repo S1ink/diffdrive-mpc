@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MPC Reference Generator — Interactive Debug Tool
+MPC Reference Generator - Interactive Debug Tool
 =================================================
 Requirement mapping:
 
@@ -13,23 +13,23 @@ Requirement mapping:
 
   Req 2  Polyline-only sampling + corridor subgoal
          References are sampled exclusively along polyline arc length.
-         α (CTE / corridor ratio) is exposed as a diagnostic / MPC cost
+         alpha (CTE / corridor ratio) is exposed as a diagnostic / MPC cost
          weight; NO recovery geometry is injected into the refs themselves
          (this was the key architectural bug in the original).
 
-  Req 3  Kinematic velocity profile
-         • Forward integration bounded by a_max and v_max
-         • Look-ahead braking: for every junction and the end-stop, compute
-           the maximum speed NOW that still allows braking to the constraint
-           speed on time:  v_cap = sqrt(v_ev² + 2·a_max·ds)
-         • Junction speed limit: v_lim = ω_max · ds_avg / Δθ
-           (from ω = v·Δθ/ds_avg ≤ ω_max)
-         • Profile reaches exactly v = 0 at the final waypoint
+    Req 3  Kinematic velocity profile
+                 - Forward integration bounded by a_max and v_max
+                 - Look-ahead braking: for every junction and the end-stop, compute
+                     the maximum speed NOW that still allows braking to the constraint
+                     speed on time:  v_cap = sqrt(v_ev^2 + 2*a_max*ds)
+                 - Junction speed limit: v_lim = omega_max * ds_avg / Delta_theta
+                     (from omega = v * Delta_theta / ds_avg <= omega_max)
+                 - Profile reaches exactly v = 0 at the final waypoint
 
   Req 4  Bisector-based projection
          Each internal vertex gets a forward angle-bisector plane.
          Segment index advances ONLY when the robot crosses the bisector at
-         the next junction — eliminates both backward jumps and premature
+         the next junction - eliminates both backward jumps and premature
          transitions.  Projection is performed on the CURRENT segment only.
 
 Controls
@@ -50,12 +50,12 @@ from matplotlib.patches import Circle
 import hashlib
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Global state
-# ═══════════════════════════════════════════════════════════════════════════════
+# ======================================================================
+# Global state
+# ======================================================================
 
-path  = []                           # [(x, y), …]
-robot = np.array([0.0, 0.0, 0.0])   # [x, y, θ]  θ in radians
+path  = []                           # [(x, y, ...)]
+robot = np.array([0.0, 0.0, 0.0])   # [x, y, theta]  theta in radians
 
 _st = dict(
     seg_idx   = 0,     # current segment (0-based)
@@ -65,28 +65,31 @@ _st = dict(
 
 params = dict(
     v_max     = 1.0,   # m/s
-    a_max     = 0.5,   # m/s²
-    omega_max = 1.5,   # rad/s  — governs junction slowdown
+    a_max     = 0.5,   # m/s^2
+    omega_max = 1.5,   # rad/s  - governs junction slowdown
     dt        = 0.05,  # s
     horizon   = 20,    # steps
     corridor  = 0.3,   # m
 )
 
+# ---------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------
+    # ======================================================================
+    # Sliders
+    # ======================================================================
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Geometry helpers
-# ═══════════════════════════════════════════════════════════════════════════════
+    def _sl(rect, label, lo, hi, val):
+        return Slider(fig.add_axes(rect), label, lo, hi, valinit=val, color='steelblue')
 
-def poly_cum(poly):
-    """Return (cumulative_arc_lengths, per_segment_lengths)."""
-    pts = np.asarray(poly, float)
-    L   = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-    return np.concatenate([[0.0], np.cumsum(L)]), L
+# ======================================================================
+# Figure layout
+# ======================================================================
 
-
+fig   = plt.figure(figsize=(14, 8))
 def make_bisectors(poly):
     """
-    Forward angle bisectors at each internal vertex i  (1 ≤ i ≤ N-2).
+    Forward angle bisectors at each internal vertex i  (1 <= i <= N-2).
 
     bisector = normalise(d_in_unit + d_out_unit)
 
@@ -109,7 +112,7 @@ def make_bisectors(poly):
 
 
 def project_seg(p, a, b):
-    """Project point p onto segment a→b.  Returns (proj, t ∈ [0,1], dist)."""
+    """Project point p onto segment a->b.  Returns (proj, t in [0,1], dist)."""
     ab = b - a
     L2 = float(np.dot(ab, ab))
     if L2 < 1e-12:
@@ -151,29 +154,29 @@ def sample_poly(poly, cum, s0, arc_ds):
     return pts
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Velocity profile
-# ═══════════════════════════════════════════════════════════════════════════════
+# ======================================================================
+# Velocity profile
+# ======================================================================
 
 def vel_profile(poly, cum, segl, s0, v0, p):
     """
     Kinematically-feasible velocity profile for `horizon` steps.
 
     Returns (velocities, arc_distances, events).
-    `events` is [(arc_length, speed_limit), …] for visualisation.
+    `events` is [(arc_length, speed_limit), ...] for visualisation.
 
     Constraint collection
-    ─────────────────────
-    End-of-path stop  →  (total, 0.0)
-    Each junction i with |Δθ| > 0.05 rad:
-        v_lim = ω_max × ds_avg / Δθ   (from ω = v·Δθ/ds_avg ≤ ω_max)
+    ---------------------
+    End-of-path stop  ->  (total, 0.0)
+    Each junction i with |Delta_theta| > 0.05 rad:
+        v_lim = omega_max * ds_avg / Delta_theta   (from omega = v * Delta_theta / ds_avg <= omega_max)
 
     Forward integration with look-ahead braking
-    ────────────────────────────────────────────
+    --------------------------------------------
     At each step, find the tightest speed cap that allows reaching every
     upcoming constraint:
-        v_cap = min_events  sqrt(v_ev² + 2·a_max·(s_ev − s0 − s))
-    Then advance velocity toward v_cap within ± a_max·dt.
+        v_cap = min_events  sqrt(v_ev^2 + 2*a_max*(s_ev - s0 - s))
+    Then advance velocity toward v_cap within +/- a_max*dt.
     """
     dt, vmax, amax, omax, N = (
         p['dt'], p['v_max'], p['a_max'], p['omega_max'], p['horizon']
@@ -184,7 +187,7 @@ def vel_profile(poly, cum, segl, s0, v0, p):
     if s0 >= total - 1e-6:
         return [0.0] * N, [0.0] * N, [(total, 0.0)]
 
-    # ── Constraint events ──────────────────────────────────────────────────
+    # -- Constraint events -----------------------------------------------
     events = [(total, 0.0)]   # end-stop
 
     for i in range(1, len(poly) - 1):
@@ -198,13 +201,13 @@ def vel_profile(poly, cum, segl, s0, v0, p):
             continue
         cos_a = np.clip(np.dot(d_in / ni, d_out / no), -1.0, 1.0)
         angle = float(np.arccos(cos_a))
-        if angle < 0.05:          # < ~3°, negligible
+        if angle < 0.05:          # < ~3 deg, negligible
             continue
         ds_avg = 0.5 * (float(segl[i-1]) + float(segl[i]))
         v_lim  = float(np.clip(omax * ds_avg / (angle + 1e-9), 0.0, vmax))
         events.append((s_j, v_lim))
 
-    # ── Forward integration ─────────────────────────────────────────────────
+    # -- Forward integration --------------------------------------------
     velocities = []
     arc_dists  = []
     v = float(np.clip(v0, 0.0, vmax))
@@ -229,9 +232,9 @@ def vel_profile(poly, cum, segl, s0, v0, p):
     return velocities, arc_dists, events
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Reference generation  (main entry point)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ======================================================================
+# Reference generation  (main entry point)
+# ======================================================================
 
 def generate_refs():
     if len(path) < 2:
@@ -240,7 +243,7 @@ def generate_refs():
     h = hashlib.md5(str(path).encode()).hexdigest()
     if h != _st['path_hash']:
         # Path changed: re-derive current segment via full bisector traversal.
-        # v_cur is intentionally preserved — it is robot state, not path state.
+        # v_cur is intentionally preserved - it is robot state, not path state.
         bis_tmp = make_bisectors(path)
         _st.update(
             seg_idx   = advance_seg(robot[:2], path, 0, bis_tmp),
@@ -251,22 +254,22 @@ def generate_refs():
     cum, segl = poly_cum(path)
     bis       = make_bisectors(path)
 
-    # ── Bisector-gated segment advance ──────────────────────────────────────
+    # -- Bisector-gated segment advance ---------------------------------
     _st['seg_idx'] = advance_seg(pos, path, _st['seg_idx'], bis)
     seg = _st['seg_idx']
 
-    # ── Project onto CURRENT segment only ───────────────────────────────────
+    # -- Project onto CURRENT segment only -------------------------------
     a = np.asarray(path[seg],     float)
     b = np.asarray(path[seg + 1], float)
     proj_pt, t_seg, cte = project_seg(pos, a, b)
     s0 = float(cum[seg]) + t_seg * float(segl[seg])
 
-    # ── Kinematic velocity profile ───────────────────────────────────────────
+    # -- Kinematic velocity profile -------------------------------------
     vs, arc_ds, events = vel_profile(path, cum, segl, s0, _st['v_cur'], params)
     _st['v_cur'] = vs[0] if vs else 0.0   # propagate speed estimate
 
-    # ── Sample references ONLY on polyline geometry (Req 2) ─────────────────
-    #    The corridor is exposed as α for the optimizer to use as a cost weight.
+    # -- Sample references ONLY on polyline geometry (Req 2) -------------
+    #    The corridor is exposed as alpha for the optimizer to use as a cost weight.
     #    No recovery geometry is blended into the refs here.
     refs  = sample_poly(path, cum, s0, arc_ds)
     alpha = float(np.clip(1.0 - cte / max(params['corridor'], 1e-9), 0.0, 1.0))
@@ -286,17 +289,15 @@ def generate_refs():
         events = events,
     )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Figure layout
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ---------------------------------------------------------------------
+# Figure layout
+# ---------------------------------------------------------------------
 fig   = plt.figure(figsize=(14, 8))
 ax_xy = fig.add_axes([0.04, 0.28, 0.56, 0.68])
 ax_v  = fig.add_axes([0.65, 0.54, 0.33, 0.40])
 ax_al = fig.add_axes([0.65, 0.28, 0.33, 0.18])
 
-# ── XY plot static artists ────────────────────────────────────────────────────
+# -- XY plot static artists ---------------------------------------------
 path_ln,  = ax_xy.plot([], [], 'k-',   lw=1.5,  zorder=2, label='path')
 seg_ln,   = ax_xy.plot([], [], '-',    color='limegreen', lw=5, alpha=0.45,
                         zorder=3, label='active seg')
@@ -313,7 +314,7 @@ ax_xy.set_xlim(-6, 6); ax_xy.set_ylim(-6, 6)
 ax_xy.grid(True, alpha=0.25)
 ax_xy.legend(loc='upper left', fontsize=8, framealpha=0.8)
 
-# ── Velocity profile plot ─────────────────────────────────────────────────────
+# -- Velocity profile plot ---------------------------------------------
 v_ln, = ax_v.plot([], [], 'royalblue', lw=2, label='v(t)')
 ax_v.set_title('Velocity Profile',   fontsize=9)
 ax_v.set_ylabel('v  (m/s)',           fontsize=8)
@@ -321,10 +322,10 @@ ax_v.set_xlabel('horizon step',       fontsize=8)
 ax_v.tick_params(labelsize=7)
 ax_v.legend(fontsize=8)
 
-# ── Corridor alpha plot ───────────────────────────────────────────────────────
+# -- Corridor alpha plot -----------------------------------------------
 al_ln, = ax_al.plot([], [], color='seagreen', lw=2)
 ax_al.axhline(1.0, color='gray', lw=0.8, ls='--')
-ax_al.set_title('Corridor α  (1 = on path,  0 = at/beyond corridor edge)',
+ax_al.set_title('Corridor alpha  (1 = on path,  0 = at/beyond corridor edge)',
                 fontsize=8)
 ax_al.set_ylim(0.0, 1.15)
 ax_al.tick_params(labelsize=7)
@@ -332,18 +333,15 @@ ax_al.tick_params(labelsize=7)
 # Dynamic per-frame artists (cleared and rebuilt each update)
 _bis_arts   = []   # bisector lines in XY
 _event_arts = []   # event markers in velocity plot
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Sliders
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ---------------------------------------------------------------------
+# Sliders
+# ---------------------------------------------------------------------
 def _sl(rect, label, lo, hi, val):
     return Slider(fig.add_axes(rect), label, lo, hi, valinit=val, color='steelblue')
 
 sl_v = _sl([0.06, 0.19, 0.22, 0.025], 'v_max',     0.1, 3.0, params['v_max'])
 sl_a = _sl([0.06, 0.14, 0.22, 0.025], 'a_max',     0.1, 3.0, params['a_max'])
-sl_o = _sl([0.06, 0.09, 0.22, 0.025], 'ω_max',     0.1, 5.0, params['omega_max'])
+sl_o = _sl([0.06, 0.09, 0.22, 0.025], 'omega_max', 0.1, 5.0, params['omega_max'])
 sl_h = _sl([0.36, 0.19, 0.22, 0.025], 'horizon',   5,   60,  params['horizon'])
 sl_c = _sl([0.36, 0.14, 0.22, 0.025], 'corridor',  0.05, 2.0, params['corridor'])
 
@@ -353,10 +351,9 @@ sl_o.on_changed(lambda v: params.update(omega_max=v))
 sl_h.on_changed(lambda v: params.update(horizon=int(v)))
 sl_c.on_changed(lambda v: params.update(corridor=v))
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Interaction
-# ═══════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------
+# Interaction
+# ---------------------------------------------------------------------
 
 _drag = [False]
 
@@ -377,7 +374,7 @@ def on_release(_):
 def on_move(e):
     if _drag[0] and e.inaxes == ax_xy and e.xdata is not None:
         robot[0], robot[1] = e.xdata, e.ydata
-        _st['v_cur'] = 0.0   # teleported — reset speed
+        _st['v_cur'] = 0.0   # teleported - reset speed
 
 def on_key(e):
     step, ang = 0.08, 0.08
@@ -406,10 +403,9 @@ fig.canvas.mpl_connect('button_release_event', on_release)
 fig.canvas.mpl_connect('motion_notify_event',  on_move)
 fig.canvas.mpl_connect('key_press_event',      on_key)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Update / render
-# ═══════════════════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------
+# Update / render
+# ---------------------------------------------------------------------
 
 def _clear_dynamic():
     for a in _bis_arts:   a.remove()
@@ -422,14 +418,14 @@ def update():
     _clear_dynamic()
     res = generate_refs()
 
-    # ── Path polyline ─────────────────────────────────────────────────────
+    # -- Path polyline --------------------------------------------------
     if len(path) >= 2:
         arr = np.asarray(path, float)
         path_ln.set_data(arr[:, 0], arr[:, 1])
     else:
         path_ln.set_data([], [])
 
-    # ── Robot dot + heading ───────────────────────────────────────────────
+    # -- Robot dot + heading -------------------------------------------
     rob_dot.set_data([robot[0]], [robot[1]])
     head_q.set_offsets([[robot[0], robot[1]]])
     head_q.set_UVC(np.cos(robot[2]), np.sin(robot[2]))
@@ -440,17 +436,17 @@ def update():
         proj_dot.set_data([], [])
         v_ln.set_data([], [])
         al_ln.set_data([], [])
-        ax_xy.set_title('Place ≥ 2 waypoints  (SHIFT + click)', fontsize=10)
+        ax_xy.set_title('Place >= 2 waypoints  (SHIFT + click)', fontsize=10)
         fig.canvas.draw_idle()
         return
 
-    # ── Active segment (highlighted) ─────────────────────────────────────
+    # -- Active segment (highlighted) ---------------------------------
     seg = res['seg']
     sa  = np.asarray(path[seg],     float)
     sb  = np.asarray(path[seg + 1], float)
     seg_ln.set_data([sa[0], sb[0]], [sa[1], sb[1]])
 
-    # ── Bisector planes (magenta tick marks at each junction) ─────────────
+    # -- Bisector planes (magenta tick marks at each junction) ---------
     for idx, bv in res['bis'].items():
         if idx >= len(path): continue
         junc = np.asarray(path[idx], float)
@@ -463,20 +459,20 @@ def update():
         )
         _bis_arts.append(ln)
 
-    # ── Reference points ─────────────────────────────────────────────────
+    # -- Reference points ----------------------------------------------
     if res['refs']:
         r = np.array(res['refs'])
         ref_ln.set_data(r[:, 0], r[:, 1])
     else:
         ref_ln.set_data([], [])
 
-    # ── Projection + corridor circle ──────────────────────────────────────
+    # -- Projection + corridor circle ----------------------------------
     px, py = res['proj']
     proj_dot.set_data([px], [py])
     corr_c.center = (px, py)
     corr_c.radius = params['corridor']
 
-    # ── Velocity profile ──────────────────────────────────────────────────
+    # -- Velocity profile ----------------------------------------------
     vs     = res['vs']
     arc_ds = res['arc_ds']
     if vs:
@@ -496,25 +492,24 @@ def update():
             mk,    = ax_v.plot(idx, v_ev, '^', color=color, ms=7, zorder=6)
             _event_arts.extend([ln, mk])
 
-    # ── Corridor α ────────────────────────────────────────────────────────
+    # -- Corridor alpha --------------------------------------------------
     N = params['horizon']
     al_ln.set_data(range(N), [res['alpha']] * N)
     ax_al.set_xlim(0, N)
 
-    # ── Status title ──────────────────────────────────────────────────────
+    # -- Status title ----------------------------------------------------
     n_segs = max(len(path) - 1, 1)
     ax_xy.set_title(
         f"Seg {res['seg']}/{n_segs - 1}   "
         f"CTE {res['cte']:.3f} m   "
-        f"α {res['alpha']:.2f}   "
-        f"v₀ {_st['v_cur']:.2f} m/s",
+        f"alpha {res['alpha']:.2f}   "
+        f"v0 {_st['v_cur']:.2f} m/s",
         fontsize=10
     )
 
     fig.canvas.draw_idle()
 
-
-# ── Main loop ─────────────────────────────────────────────────────────────────
+# -- Main loop ---------------------------------------------------------
 
 def loop():
     while plt.fignum_exists(fig.number):

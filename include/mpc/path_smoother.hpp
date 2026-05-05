@@ -1,29 +1,11 @@
 #pragma once
 
-// =============================================================================
-// path_smoother.hpp — Polyline-to-smooth-geometry converter for the MPC
-//                     reference generator.
-//
-// At each interior waypoint of a polyline path, PathSmoother replaces the
-// sharp corner with a circular arc whose radius satisfies two constraints:
-//
-//   1. Kinematic:  radius ≤ v_max / omega_max
-//      (ensures the robot can traverse the arc without exceeding ω_max)
-//
-//   2. Geometric:  the tangent offset (radius · tan(θ/2)) must fit inside
-//      the adjacent segment lengths without the arcs of two neighbouring
-//      junctions overlapping.  An iterative forward–backward sweep (ported
-//      from the Stanley-controller PathSampler) enforces this globally.
-//
-// The resulting SmoothedPath supports:
-//   • Projection of a 2-D point → (arc position, closest point)
-//   • Sampling (position, tangent heading, left-normal, speed limit) at
-//     any arc position along the smooth path.
-//
-// These two operations replace the raw-polyline arc-length table used by the
-// original ReferenceGenerator so that reference headings are kinematically
-// continuous through corners.
-// =============================================================================
+// PathSmoother: convert a polyline into a sequence of lines and circular
+// arcs. Each interior corner is replaced by an arc that respects kinematic
+// and geometric constraints (radius <= v_max/omega_max and fits inside
+// adjacent segment lengths).  The SmoothedPath supports projecting a 2-D
+// point to an arc position and sampling position, tangent, normal, and
+// speed limit at any arc coordinate.
 
 #include "path.hpp"
 #include "params.hpp"
@@ -42,8 +24,7 @@ namespace mpc
 class PathSmoother
 {
 public:
-    // ── Segment types ─────────────────────────────────────────────────────────
-
+    // Segment types
     struct LineSegment
     {
         Eigen::Vector2d start{Eigen::Vector2d::Zero()};
@@ -66,7 +47,7 @@ public:
 
     using Segment = std::variant<LineSegment, ArcSegment>;
 
-    // ── Per-point sample from the smooth path ─────────────────────────────────
+    // Per-point sample from the smooth path
 
     struct SmoothSample
     {
@@ -77,7 +58,7 @@ public:
         double v_limit{0.0};           // speed cap at this point
     };
 
-    // ── Smooth path container ─────────────────────────────────────────────────
+    // Smooth path container
 
     struct SmoothedPath
     {
@@ -88,52 +69,50 @@ public:
 
         bool empty() const { return segs.empty(); }
 
-        /// Project a 2-D point p onto the smooth path.
-        /// Returns {arc_position_s, closest_point_on_path}.
+        // Project a 2-D point p onto the smooth path.
+        // Returns {arc_position_s, closest_point_on_path}.
         std::pair<double, Eigen::Vector2d> project(
             const Eigen::Vector2d& p) const;
 
-        /// Sample position, tangent heading, left-normal, and speed limit at
-        /// arc position s (clamped to [0, total]).
-        /// v_max_global is returned on line segments where no arc limit applies.
+        // Sample position, tangent heading, left-normal, and speed limit at
+        // arc position s (clamped to [0, total]).
+        // v_max_global is returned on line segments where no arc limit applies.
         SmoothSample sampleAt(double s, double v_max_global) const;
 
     private:
-        /// Binary-search helper: index of the segment that contains arc pos s.
+        // Binary-search helper: index of the segment that contains arc pos s.
         int segAt(double s) const;
     };
 
-    // ── Public API ─────────────────────────────────────────────────────────────
-
+    // Public API
     explicit PathSmoother(const MPCParams& p) : params_(p) {}
 
-    /// Convert a raw polyline path to a smooth line+arc sequence.
+    // Convert a raw polyline path to a smooth line+arc sequence.
     SmoothedPath smooth(const Path& path) const;
 
 private:
     MPCParams params_;
 
-    // ── Junction metadata ─────────────────────────────────────────────────────
-
+    // Junction metadata
     struct Junction
     {
-        double theta{0.0};    // exterior turn angle [0, π]
+        double theta{0.0};    // exterior turn angle in [0, pi]
         double radius{0.0};   // fitted arc radius [m]
-        double tan_off{0.0};  // radius · tan(θ/2): segment length consumed
+        double tan_off{0.0};  // radius * tan(theta/2): segment length consumed
         double v_max{0.0};    // speed limit on the arc
     };
 
-    // ── Internal helpers ───────────────────────────────────────────────────────
+    // Internal helpers
 
-    /// Compute per-junction radii from kinematic and geometric constraints,
-    /// then run the multi-pass optimisation sweep to prevent arc overlap.
+    // Compute per-junction radii from kinematic and geometric constraints,
+    // then run the multi-pass optimisation sweep to prevent arc overlap.
     void buildJunctions(
         const Path& path,
         std::vector<Junction>& juncs,
         std::vector<double>& seg_lengths,
         std::vector<double>& half_tans) const;
 
-    /// Single-segment overlap resolution step (called by buildJunctions).
+    // Single-segment overlap resolution step (called by buildJunctions).
     void optimizeJunction(
         size_t seg_i,
         std::vector<Junction>& juncs,

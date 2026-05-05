@@ -8,11 +8,11 @@
 namespace mpc
 {
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
-/// Convert an Eigen sparse matrix (already column-major / CSC) to a heap-
-/// allocated OSQPCscMatrix.  The caller owns the returned pointer and must
-/// free it with OSQPCscMatrix_free().
+// Convert an Eigen sparse matrix (already column-major / CSC) to a heap-
+// allocated OSQPCscMatrix.  The caller owns the returned pointer and must
+// free it with OSQPCscMatrix_free().
 static OSQPCscMatrix* eigenToCSC(const Eigen::SparseMatrix<double>& mat)
 {
     Eigen::SparseMatrix<double> A = mat;
@@ -42,7 +42,7 @@ static OSQPCscMatrix* eigenToCSC(const Eigen::SparseMatrix<double>& mat)
     return OSQPCscMatrix_new(m, n, nnz, values, rowind, colptr);
 }
 
-// ── Constructor / destructor ──────────────────────────────────────────────────
+// Constructor / destructor
 
 Solver::Solver() = default;
 
@@ -54,7 +54,7 @@ Solver::~Solver()
     }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// Public API
 
 bool Solver::update(const QP& qp, int N)
 {
@@ -71,24 +71,24 @@ bool Solver::update(const QP& qp, int N)
         incrementalUpdate(qp);
     }
 
-    // ── Apply warm start from shifted previous solution ───────────────
+    // Apply warm start from shifted previous solution
     if (!z_warm_.empty())
     {
-        // osqp_warm_start accepts (solver, x, y); y = nullptr → dual unchanged
+        // osqp_warm_start accepts (solver, x, y); y = nullptr -> dual unchanged
         osqp_warm_start(solver_, z_warm_.data(), nullptr);
     }
 
-    // ── Solve ─────────────────────────────────────────────────────────
+    // Solve
     osqp_solve(solver_);
 
     if (solver_->info->status_val != OSQP_SOLVED)
     {
         std::cerr << "[Solver] OSQP status: " << solver_->info->status
-                  << " — applying fallback\n";
+                  << " - applying fallback\n";
         return false;
     }
 
-    // ── Store solution and prepare warm start for next iteration ─────
+    // Store solution and prepare warm start for next iteration
     const double* x = solver_->solution->x;
     solution_.assign(x, x + n_);
 
@@ -118,7 +118,7 @@ std::vector<State> Solver::getStatePrediction() const
     }
 
     // State blocks occupy the first (N_+1)*NX elements of the decision vector.
-    // Layout: z = [ x_0 x_1 ... x_N  u_0 ... u_{N-1}  ε_0 ... ε_{N-1} ]
+    // Layout: z = [ x_0 x_1 ... x_N  u_0 ... u_{N-1}  eps_0 ... eps_{N-1} ]
     constexpr int NX = 3;
     std::vector<State> pred(N_ + 1);
     for (int k = 0; k <= N_; ++k)
@@ -129,7 +129,7 @@ std::vector<State> Solver::getStatePrediction() const
     return pred;
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
+// Private helpers
 
 void Solver::fullSetup(const QP& qp, int N)
 {
@@ -205,13 +205,13 @@ void Solver::fullSetup(const QP& qp, int N)
 
 void Solver::incrementalUpdate(const QP& qp)
 {
-    // ── Update linear cost q ──────────────────────────────────────────
+    // Update linear cost q
     for (int i = 0; i < (int)qp.q.size(); ++i)
     {
         q_buf_[i] = (OSQPFloat)qp.q[i];
     }
 
-    // ── Update bounds l, u ────────────────────────────────────────────
+    // Update bounds l, u
     for (int i = 0; i < (int)qp.l.size(); ++i)
     {
         l_buf_[i] = (OSQPFloat)qp.l[i];
@@ -223,17 +223,9 @@ void Solver::incrementalUpdate(const QP& qp)
 
     // osqp_update_data_vec(solver, q, q_n, l, l_n, u, u_n)
     // Pass nullptr / 0 for any component you don't want to update.
-    osqp_update_data_vec(
-        solver_,
-        q_buf_.data(),
-        // (OSQPInt)q_buf_.size(),
-        l_buf_.data(),
-        // (OSQPInt)l_buf_.size(),
-        u_buf_.data()  //,
-        // (OSQPInt)u_buf_.size());
-    );
+    osqp_update_data_vec(solver_, q_buf_.data(), l_buf_.data(), u_buf_.data());
 
-    // ── Update A (LTV dynamics + corridor normals change each step) ───
+    // Update A (LTV dynamics + corridor normals change each step)
     // P is constant (weight matrices don't change), so we skip it.
     // IMPORTANT: this assumes the sparsity structure of A is identical to
     // the one used in fullSetup().  QPBuilder guarantees this by always
@@ -242,7 +234,7 @@ void Solver::incrementalUpdate(const QP& qp)
     Ac.makeCompressed();
     assert(
         (int)Ac.nonZeros() == (int)Ax_buf_.size() &&
-        "A sparsity pattern changed — call fullSetup() instead");
+        "A sparsity pattern changed - call fullSetup() instead");
 
     for (int i = 0; i < (int)Ax_buf_.size(); ++i)
     {
@@ -250,7 +242,7 @@ void Solver::incrementalUpdate(const QP& qp)
     }
 
     // osqp_update_data_mat(solver, Px, Px_idx, P_n, Ax, Ax_idx, A_n)
-    // Passing nullptr for index arrays → update ALL nonzeros in order.
+    // Passing nullptr for index arrays -> update ALL nonzeros in order.
     osqp_update_data_mat(
         solver_,
         nullptr,
@@ -267,15 +259,12 @@ void Solver::shiftAndStoreWarmStart()
     // timestep so it is a reasonable initial guess for the next QP.
     //
     // Decision vector layout (mirrored from qp_builder.hpp):
-    //   z = [ x_0 … x_N      (NX=3 per step, N+1 blocks)
-    //         u_0 … u_{N-1}  (NU=2 per step, N   blocks)
-    //         ε_0 … ε_N      (1   per step, N+1 blocks)  ]  ← Bug #4 fix
+    //   z = [ x_0 ... x_N      (NX=3 per step, N+1 blocks)
+    //         u_0 ... u_{N-1}  (NU=2 per step, N   blocks)
+    //         eps_0 ... eps_N  (1   per step, N+1 blocks) ]  // Bug #4 fix
     //
-    // The slack shift runs N iterations (was N-1): ε_0←ε_1, …, ε_{N-1}←ε_N.
-    // ε_N stays in place (repeat).
-
-    constexpr int NX = 3;
-    constexpr int NU = 2;
+    // The slack shift runs N iterations (was N-1): eps_0 <- eps_1, ..., eps_{N-1} <- eps_N.
+    // eps_N stays in place (repeat).
 
     if ((int)solution_.size() != n_)
     {
@@ -288,38 +277,38 @@ void Solver::shiftAndStoreWarmStart()
         z_warm_[i] = (OSQPFloat)solution_[i];
     }
 
-    // ── Shift state blocks: x_k ← x_{k+1}, repeat x_N ───────────────
+    // Shift state blocks: x_k <- x_{k+1}, repeat x_N
     for (int k = 0; k < N_; ++k)
     {
-        const int dst = NX * k;
-        const int src = NX * (k + 1);
-        for (int i = 0; i < NX; ++i)
+        const int dst = mpc::NX * k;
+        const int src = mpc::NX * (k + 1);
+        for (int i = 0; i < mpc::NX; ++i)
         {
             z_warm_[dst + i] = z_warm_[src + i];
         }
     }
     // x_N already in place (nothing to do)
 
-    // ── Shift control blocks: u_k ← u_{k+1}, repeat u_{N-1} ─────────
-    const int ctrl_base = NX * (N_ + 1);
+    // Shift control blocks: u_k <- u_{k+1}, repeat u_{N-1}
+    const int ctrl_base = mpc::NX * (N_ + 1);
     for (int k = 0; k < N_ - 1; ++k)
     {
-        const int dst = ctrl_base + NU * k;
-        const int src = ctrl_base + NU * (k + 1);
-        for (int i = 0; i < NU; ++i)
+        const int dst = ctrl_base + mpc::NU * k;
+        const int src = ctrl_base + mpc::NU * (k + 1);
+        for (int i = 0; i < mpc::NU; ++i)
         {
             z_warm_[dst + i] = z_warm_[src + i];
         }
     }
     // u_{N-1} unchanged (repeat)
 
-    // ── Shift slack blocks: ε_k ← ε_{k+1}, repeat ε_N ──────────────
-    const int slack_base = ctrl_base + NU * N_;
-    for (int k = 0; k < N_; ++k)  // N iterations: covers ε_{N-1} ← ε_N
+    // Shift slack blocks: eps_k <- eps_{k+1}, repeat eps_N
+    const int slack_base = ctrl_base + mpc::NU * N_;
+    for (int k = 0; k < N_; ++k)  // N iterations: covers eps_{N-1} <- eps_N
     {
         z_warm_[slack_base + k] = z_warm_[slack_base + k + 1];
     }
-    // ε_N unchanged (repeat)
+    // eps_N unchanged (repeat)
 }
 
 }  // namespace mpc
