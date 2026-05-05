@@ -15,7 +15,7 @@ struct MPCParams
     double feedback_delay_s = 0.0;
 
     // Velocity limits
-    double v_max = 1.2;
+    double v_max = 2.5;
     double v_min = -0.1;
     double omega_max = 1.5;
 
@@ -34,8 +34,8 @@ struct MPCParams
     double Q_theta_terminal = 30.0;
     double R_v = 0.0;
     double R_omega = 0.0;
-    double R_rate_v = 1.0;
-    double R_rate_omega = 1.0;
+    double R_rate_v = 3.0;
+    double R_rate_omega = 3.0;
 
     // Funnel decay: how quickly an initial widened corridor returns to d_hard
     double funnel_decay_tau = 5.0;
