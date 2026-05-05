@@ -4,7 +4,7 @@ project(dd_mpc)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ── Third-party dependencies ─────────────────────────────────────────────────
+# --- Third-party dependencies -------------------------------------------------
 
 find_package(Eigen3 REQUIRED)
 
@@ -13,7 +13,7 @@ find_package(Eigen3 REQUIRED)
 set(OSQP_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_subdirectory(osqp)
 
-# ── MPC core library ─────────────────────────────────────────────────────────
+# --- MPC core library ---------------------------------------------------------
 
 add_library(mpc_core
     src/mpc_controller.cpp
@@ -39,7 +39,8 @@ target_link_libraries(mpc_core
     PRIVATE osqpstatic
 )
 
-# ── Standalone simulation executable
+# --- Standalone simulation executable -----------------------------------------
+
 add_executable(sim_test
     test/sim_main.cpp
     test/sim_utils.cpp
