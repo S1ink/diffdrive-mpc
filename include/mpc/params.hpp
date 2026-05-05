@@ -25,6 +25,7 @@ struct MPCParams
     // silently shortened below minBrakingSteps().
     int N = 24;
     double dt = 0.05;  // timestep [s]  → 20 Hz
+    double feedback_delay_s = 0.0;
 
     // ── Velocity limits ───────────────────────────────────────────────
     double v_max = 1.2;      // max forward speed   [m/s]
@@ -63,7 +64,7 @@ struct MPCParams
     // ── Reference blending ────────────────────────────────────────────
     // Smooths abrupt same-path numerical jitter: ref = α·new + (1−α)·old.
     // Blending is automatically suppressed on path identity changes.
-    double blend_alpha = 0.7;  // 1.0 = no blending (pure new reference)
+    double blend_alpha = 1.0;  // 1.0 = no blending (pure new reference)
 
     // ── Stanley heading correction ────────────────────────────────────
     // Modifies the reference heading at each horizon step so the optimizer
@@ -83,7 +84,13 @@ struct MPCParams
     // Larger values produce more aggressive rotation toward the path but
     // can over-correct at high speed; smaller values are gentler.
     double stanley_k = 2.5;
-    double stanley_v_min = 0.15;  // [m/s]
+    double stanley_v_min = 0.15;   // [m/s]
+    // Per-step exponential decay applied to the Stanley correction over the
+    // horizon.  correction_k = correction_0 * exp(-stanley_decay * k).
+    // At the default 0.15, correction drops to ~1% by step 30, so the
+    // optimizer sees path-tangent headings at the far end of the horizon
+    // while still being steered back toward the path at k=0.
+    double stanley_decay = 0.15;
 
     // ── Near-goal detection ───────────────────────────────────────────
     // When remaining path length drops below this, enforce v_N = 0.

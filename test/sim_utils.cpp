@@ -218,10 +218,6 @@ std::string FrameLogger::buildFrame(
     jd(ss, dbg.proj_pt.y());
     ss << "],";
 
-    ss << "\"d_hard_eff\":";
-    jd(ss, dbg.d_hard_eff);
-    ss << ",";
-
     ss << "\"solver_ok\":" << (dbg.solver_ok ? "true" : "false") << ",";
 
     ss << "\"solve_ms\":";
@@ -241,14 +237,14 @@ std::string FrameLogger::buildFrame(
     ss << "],";
 
     ss << "\"ref\":[";
-    for (int k = 0; k < static_cast<int>(dbg.ref_traj.size()); ++k)
+    for (int k = 0; k < static_cast<int>(dbg.ref_snap.x_ref.size()); ++k)
     {
         if (k)
         {
             ss << ",";
         }
-        ss << "[" << dbg.ref_traj[k].x << "," << dbg.ref_traj[k].y << ","
-           << dbg.ref_traj[k].theta << "]";
+        ss << "[" << dbg.ref_snap.x_ref[k].x << "," << dbg.ref_snap.x_ref[k].y
+           << "," << dbg.ref_snap.x_ref[k].theta << "]";
     }
     ss << "],";
 

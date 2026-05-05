@@ -69,9 +69,9 @@ struct VelocityEvent
 
 Reference ReferenceGenerator::generate(
     const Path& path,
-    const ProjectionResult& proj,
+    size_t path_hash,
     const Eigen::Vector2d& robot_pos,
-    double v_cur) const
+    double v_cur)
 {
     const int N = params_.N;
     const double dt = params_.dt;
@@ -82,12 +82,19 @@ Reference ReferenceGenerator::generate(
     r.proj_pts.resize(N + 1);
     r.v_profile.resize(N + 1);
 
-    // ── 1. Build smooth geometry ───────────────────────────────────────
+    // ── 1. Build smooth geometry (cached) ─────────────────────────────
     //
     // PathSmoother replaces each interior waypoint with a circular arc.
-    // All subsequent sampling is done on this smooth path rather than on
-    // the raw polyline, giving kinematically continuous reference headings.
-    const PathSmoother::SmoothedPath sp = smoother_.smooth(path);
+    // Rebuilding is expensive so the result is cached by path hash;
+    // on a path change the controller resets its own hash which forces
+    // a miss here on the first cycle with the new geometry.
+    if (!has_cached_sp_ || path_hash != cached_hash_)
+    {
+        cached_sp_ = smoother_.smooth(path);
+        cached_hash_ = path_hash;
+        has_cached_sp_ = true;
+    }
+    const PathSmoother::SmoothedPath& sp = cached_sp_;
 
     // ── Fallback: degenerate / very short path ─────────────────────────
     if (sp.empty() || sp.total < 1e-6)
@@ -139,6 +146,8 @@ Reference ReferenceGenerator::generate(
         const PathSmoother::SmoothSample s = sp.sampleAt(s0, params_.v_max);
         r.cte = s.normal.dot(robot_pos - smooth_proj);
     }
+
+    r.remaining_arc = std::max(0.0, sp.total - s0);
 
     // ── Edge case: robot already at or past path end ───────────────────
     if (s0 >= sp.total - 1e-6)

@@ -98,8 +98,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
     }
 
     // ── A. Trust measured state; predict forward by one dt ────────────
-    // const State x_pred = latencyCompensate(x_measured);
-    const State& x_pred = x_measured;
+    const State x_pred = latencyCompensate(x_measured);
 
     // ── C1. Path change detection (hash-based) ────────────────────────
     //
@@ -130,7 +129,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // polyline, so corners don't produce spuriously large CTE values.
     Reference new_ref = ref_gen_.generate(
         path,
-        proj,
+        new_hash,
         Eigen::Vector2d(x_pred.x, x_pred.y),
         u_prev_.v);
 
@@ -159,13 +158,14 @@ Control MPCController::update(const State& x_measured, const Path& path)
     {
         const double k = params_.stanley_k;
         const double v_min_st = params_.stanley_v_min;
+        const double decay = params_.stanley_decay;
         for (int kk = 0; kk <= params_.N; ++kk)
         {
             const double v_k = std::max(new_ref.v_profile[kk], v_min_st);
-            const double correction = std::atan2(-k * cte_raw, v_k);
+            const double correction =
+                std::atan2(-k * cte_raw, v_k) * std::exp(-decay * kk);
             double& th = new_ref.x_ref[kk].theta;
             th += correction;
-            // Normalise to [−π, π]
             while (th > M_PI)
             {
                 th -= 2.0 * M_PI;
@@ -212,7 +212,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── C3. Near-goal detection ────────────────────────────────────────
     // Terminal-v=0 only when BOTH near the path end AND laterally close.
     const bool near =
-        nearGoal(path, proj) &&
+        (new_ref.remaining_arc < params_.goal_threshold) &&
         (std::abs(cte_raw) < params_.d_hard * params_.goal_cte_scale);
 
     // ── Build QPContext ─────────────────────────────────────────
@@ -245,16 +245,10 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── Populate debug snapshot ────────────────────────────────────────
     debug_info_.solver_ok = ok;
     debug_info_.cte_raw = cte_raw;
-    // debug_info_.d_hard_eff = d_hard_eff;
-    // debug_info_.v_scale = 1.0;  // no lateral-speed scaling
-    // debug_info_.Q_theta_eff = Q_theta_eff;
     debug_info_.near_goal = near;
     debug_info_.proj_pt = proj.proj;
     debug_info_.proj_segment_index = proj.segment_index;
-    debug_info_.ref_traj = ref.x_ref;
-    debug_info_.seg_normals = ref.seg_normals;
-    debug_info_.proj_pts = ref.proj_pts;
-    debug_info_.v_profile = ref.v_profile;  // post-v_scale, post-blend
+    debug_info_.ref_snap = std::move(ref_qp);
     debug_info_.pred_traj =
         ok ? solver_.getStatePrediction() : std::vector<State>{};
 
@@ -276,49 +270,16 @@ Control MPCController::update(const State& x_measured, const Path& path)
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-// State MPCController::latencyCompensate(const State& x) const
-// {
-//     return {
-//         x.x + u_prev_.v * std::cos(x.theta) * params_.dt,
-//         x.y + u_prev_.v * std::sin(x.theta) * params_.dt,
-//         x.theta + u_prev_.omega * params_.dt};
-// }
-
-// double MPCController::crossTrackError(
-//     const State& x,
-//     const ProjectionResult& proj,
-//     const Path& path) const
-// {
-//     const Eigen::Vector2d p(x.x, x.y);
-//     const Eigen::Vector2d dir = path.segmentDir(proj.segment_index);
-//     const Eigen::Vector2d n(-dir.y(), dir.x());
-//     return n.dot(p - proj.proj);
-// }
-
-double MPCController::distToEnd(const Path& path, const ProjectionResult& proj)
-    const
+State MPCController::latencyCompensate(const State& x) const
 {
-    size_t idx = proj.segment_index;
-    if (idx >= path.size() - 1)
+    if (iszero(params_.feedback_delay_s))
     {
-        return 0.0;
+        return x;
     }
-
-    const double seg_len = (path.pts[idx + 1].pos - path.pts[idx].pos).norm();
-    double d = (1.0 - proj.t) * seg_len;
-
-    for (size_t i = idx + 1; i < path.size() - 1; ++i)
-    {
-        d += (path.pts[i + 1].pos - path.pts[i].pos).norm();
-    }
-
-    return d;
-}
-
-bool MPCController::nearGoal(const Path& path, const ProjectionResult& proj)
-    const
-{
-    return distToEnd(path, proj) < params_.goal_threshold;
+    return {
+        x.x + u_prev_.v * std::cos(x.theta) * params_.feedback_delay_s,
+        x.y + u_prev_.v * std::sin(x.theta) * params_.feedback_delay_s,
+        x.theta + u_prev_.omega * params_.feedback_delay_s};
 }
 
 Reference MPCController::blend(

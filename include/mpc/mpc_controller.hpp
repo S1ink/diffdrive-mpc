@@ -30,44 +30,19 @@ struct DebugInfo
     /// Empty if the solver failed.
     std::vector<State> pred_traj;
 
-    /// Blended reference trajectory x_0 … x_N used to build the QP.
-    std::vector<State> ref_traj;
+    /// Heading-normalised reference snapshot sent to the QP this cycle.
+    /// Fields: x_ref (N+1 States), seg_normals, proj_pts, v_profile, cte.
+    Reference ref_snap;
 
     // ── Corridor geometry ─────────────────────────────────────────────
-
-    /// Unit normals of the assigned corridor segment for each horizon step.
-    /// Length N+1.  Used to draw corridor walls in Foxglove.
-    std::vector<Eigen::Vector2d> seg_normals;
-
-    /// Closest point on the path for each horizon step (corridor centre).
-    /// Length N+1.
-    std::vector<Eigen::Vector2d> proj_pts;
 
     /// Closest point on path to the (latency-compensated) robot position.
     Eigen::Vector2d proj_pt = Eigen::Vector2d::Zero();
 
-    // ── Velocity profile ──────────────────────────────────────────────
+    // ── Scalars ───────────────────────────────────────────────────────
 
-    /// Reference speed at each horizon step [m/s].  Length N+1.
-    /// Incorporates curvature limit, braking limit, and v_scale.
-    std::vector<double> v_profile;
-
-    // ── Adaptive scalars ──────────────────────────────────────────────
-
-    /// Effective corridor half-width [m] used this cycle.
-    /// May be widened relative to params.d_hard during recovery.
-    double d_hard_eff = 0.0;
-
-    /// Raw (un-deadbanded) signed cross-track error [m].
-    /// Positive = robot is to the left of the path.
+    /// Raw signed cross-track error [m].  Positive = robot left of path.
     double cte_raw = 0.0;
-
-    /// Velocity reduction scale factor this cycle (always 1.0 — no
-    /// lateral-speed scaling enabled).
-    double v_scale = 1.0;
-
-    /// Effective heading weight. (No adaptive scaling by cte applied.)
-    double Q_theta_eff = 0.0;
 
     // ── Status flags ──────────────────────────────────────────────────
 
@@ -175,19 +150,7 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────
 
     /// Predict robot state one timestep ahead to compensate command latency.
-    // State latencyCompensate(const State& x) const;
-
-    /// Signed cross-track distance from x to the nearest projected point.
-    // double crossTrackError(
-    //     const State& x,
-    //     const ProjectionResult& proj,
-    //     const Path& path) const;
-
-    /// True when the remaining path length is below params_.goal_threshold.
-    bool nearGoal(const Path& path, const ProjectionResult& proj) const;
-
-    /// Remaining arc length from (proj.segment_index, proj.t) to path end.
-    double distToEnd(const Path& path, const ProjectionResult& proj) const;
+    State latencyCompensate(const State& x) const;
 
     /// Blend two references:  α·r_new + (1−α)·r_old.
     Reference blend(
