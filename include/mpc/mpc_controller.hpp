@@ -10,8 +10,10 @@
 #include "linearization.hpp"
 
 #include <Eigen/Dense>
+
 #include <vector>
 #include <cstddef>
+
 
 namespace mpc
 {

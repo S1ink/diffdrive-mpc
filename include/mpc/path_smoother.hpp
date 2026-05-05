@@ -1,12 +1,5 @@
 #pragma once
 
-// PathSmoother: convert a polyline into a sequence of lines and circular
-// arcs. Each interior corner is replaced by an arc that respects kinematic
-// and geometric constraints (radius <= v_max/omega_max and fits inside
-// adjacent segment lengths).  The SmoothedPath supports projecting a 2-D
-// point to an arc position and sampling position, tangent, normal, and
-// speed limit at any arc coordinate.
-
 #include "path.hpp"
 #include "params.hpp"
 
@@ -21,6 +14,12 @@
 namespace mpc
 {
 
+// PathSmoother: convert a polyline into a sequence of lines and circular
+// arcs. Each interior corner is replaced by an arc that respects kinematic
+// and geometric constraints (radius <= v_max/omega_max and fits inside
+// adjacent segment lengths).  The SmoothedPath supports projecting a 2-D
+// point to an arc position and sampling position, tangent, normal, and
+// speed limit at any arc coordinate.
 class PathSmoother
 {
 public:

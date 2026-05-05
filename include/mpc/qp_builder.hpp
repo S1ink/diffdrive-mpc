@@ -24,6 +24,7 @@ inline int idx_x(int k) { return NX * k; }
 inline int idx_u(int k, int N) { return NX * (N + 1) + NU * k; }
 inline int idx_slack(int k, int N) { return NX * (N + 1) + NU * N + k; }
 
+
 // QP data
 struct QP
 {
@@ -54,6 +55,7 @@ struct QPContext
     // When true, enforces v_{N-1} = 0 (terminal stop near goal).
     bool near_goal = false;
 };
+
 
 // Builder
 class QPBuilder

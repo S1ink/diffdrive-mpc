@@ -5,8 +5,9 @@
 #include "params.hpp"
 #include "path_smoother.hpp"
 
-#include <vector>
 #include <Eigen/Dense>
+
+#include <vector>
 
 
 namespace mpc

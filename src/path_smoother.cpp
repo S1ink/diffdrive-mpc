@@ -1,7 +1,3 @@
-// PathSmoother implementation.
-// Geometry adapted from PathSampler: double precision, world-frame coords,
-// use MPCParams, and provide SmoothedPath::project() and sampleAt().
-
 #include "mpc/path_smoother.hpp"
 
 #include <algorithm>
