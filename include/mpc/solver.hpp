@@ -1,10 +1,12 @@
 #pragma once
 
-#include "qp_builder.hpp"
 #include "types.hpp"
+#include "qp_builder.hpp"
 
 #include <osqp.h>
+
 #include <vector>
+
 
 namespace mpc
 {

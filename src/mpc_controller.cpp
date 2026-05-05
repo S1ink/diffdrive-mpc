@@ -1,11 +1,11 @@
 #include "mpc/mpc_controller.hpp"
 
-#include <chrono>
-
-#include <algorithm>
-#include <cassert>
 #include <cmath>
+#include <chrono>
+#include <cassert>
 #include <iostream>
+#include <algorithm>
+
 
 namespace mpc
 {
@@ -98,7 +98,8 @@ Control MPCController::update(const State& x_measured, const Path& path)
     }
 
     // ── A. Trust measured state; predict forward by one dt ────────────
-    const State x_pred = latencyCompensate(x_measured);
+    // const State x_pred = latencyCompensate(x_measured);
+    const State& x_pred = x_measured;
 
     // ── C1. Path change detection (hash-based) ────────────────────────
     //
@@ -135,14 +136,6 @@ Control MPCController::update(const State& x_measured, const Path& path)
 
     // ── D1+D3. Cross-track error with deadband ─────────────────────────
     const double cte_raw = new_ref.cte;
-    double cte = cte_raw;
-    if (std::abs(cte) < params_.d_deadband)
-    {
-        cte = 0.0;
-    }
-
-    // ── D2. Velocity scale under lateral error (removed)
-    // No per-cycle speed scaling; keep v_profile as generated.
 
     // ── Fix 1: Stanley heading correction ────────────────────────────
     //
@@ -196,17 +189,6 @@ Control MPCController::update(const State& x_measured, const Path& path)
     ref_prev_ = new_ref;
     has_prev_ref_ = true;
 
-    // ── D1. Adaptive corridor width ────────────────────────────────────
-    double d_hard_eff = params_.d_hard;
-    if (std::abs(cte) > params_.d_hard)
-    {
-        d_hard_eff = params_.d_hard * params_.adaptive_corridor_scale;
-    }
-
-    // ── F1. Heading weight (no adaptive scaling)
-    const double Q_theta_eff = params_.Q_theta;
-    const double Q_theta_terminal_eff = params_.Q_theta_terminal;
-
     // ── Normalise reference headings (heading-wrap fix) ─────────────────
     // Moved here so the recovery check below can read corrected heading at k=0.
     Reference ref_qp = ref;
@@ -235,10 +217,10 @@ Control MPCController::update(const State& x_measured, const Path& path)
 
     // ── Build QPContext ─────────────────────────────────────────
     QPContext ctx;
-    ctx.d_hard_eff = d_hard_eff;
+    ctx.d_hard_eff = params_.d_hard;
     ctx.cte_raw = cte_raw;
-    ctx.Q_theta_eff = Q_theta_eff;
-    ctx.Q_theta_terminal_eff = Q_theta_terminal_eff;
+    ctx.Q_theta_eff = params_.Q_theta;
+    ctx.Q_theta_terminal_eff = params_.Q_theta_terminal;
     ctx.near_goal = near;
 
     // ── H. Linearise around previous predicted trajectory (SQP step) ──
@@ -263,9 +245,9 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // ── Populate debug snapshot ────────────────────────────────────────
     debug_info_.solver_ok = ok;
     debug_info_.cte_raw = cte_raw;
-    debug_info_.d_hard_eff = d_hard_eff;
-    debug_info_.v_scale = 1.0;  // no lateral-speed scaling
-    debug_info_.Q_theta_eff = Q_theta_eff;
+    // debug_info_.d_hard_eff = d_hard_eff;
+    // debug_info_.v_scale = 1.0;  // no lateral-speed scaling
+    // debug_info_.Q_theta_eff = Q_theta_eff;
     debug_info_.near_goal = near;
     debug_info_.proj_pt = proj.proj;
     debug_info_.proj_segment_index = proj.segment_index;
@@ -288,31 +270,30 @@ Control MPCController::update(const State& x_measured, const Path& path)
         return u_prev_;
     }
 
-    const Control u = solver_.getControl();
-    u_prev_ = u;
-    return u;
+    u_prev_ = solver_.getControl();
+    return u_prev_;
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-State MPCController::latencyCompensate(const State& x) const
-{
-    return {
-        x.x + u_prev_.v * std::cos(x.theta) * params_.dt,
-        x.y + u_prev_.v * std::sin(x.theta) * params_.dt,
-        x.theta + u_prev_.omega * params_.dt};
-}
+// State MPCController::latencyCompensate(const State& x) const
+// {
+//     return {
+//         x.x + u_prev_.v * std::cos(x.theta) * params_.dt,
+//         x.y + u_prev_.v * std::sin(x.theta) * params_.dt,
+//         x.theta + u_prev_.omega * params_.dt};
+// }
 
-double MPCController::crossTrackError(
-    const State& x,
-    const ProjectionResult& proj,
-    const Path& path) const
-{
-    const Eigen::Vector2d p(x.x, x.y);
-    const Eigen::Vector2d dir = path.segmentDir(proj.segment_index);
-    const Eigen::Vector2d n(-dir.y(), dir.x());
-    return n.dot(p - proj.proj);
-}
+// double MPCController::crossTrackError(
+//     const State& x,
+//     const ProjectionResult& proj,
+//     const Path& path) const
+// {
+//     const Eigen::Vector2d p(x.x, x.y);
+//     const Eigen::Vector2d dir = path.segmentDir(proj.segment_index);
+//     const Eigen::Vector2d n(-dir.y(), dir.x());
+//     return n.dot(p - proj.proj);
+// }
 
 double MPCController::distToEnd(const Path& path, const ProjectionResult& proj)
     const

@@ -1,17 +1,19 @@
 #pragma once
 
-#include "params.hpp"
-#include "types.hpp"
 #include "path.hpp"
-#include "projection.hpp"
-#include "reference.hpp"
-#include "linearization.hpp"
-#include "qp_builder.hpp"
+#include "types.hpp"
+#include "params.hpp"
 #include "solver.hpp"
+#include "reference.hpp"
+#include "projection.hpp"
+#include "qp_builder.hpp"
+#include "linearization.hpp"
 
 #include <Eigen/Dense>
+
 #include <vector>
 #include <cstddef>
+
 
 namespace mpc
 {
@@ -173,13 +175,13 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────
 
     /// Predict robot state one timestep ahead to compensate command latency.
-    State latencyCompensate(const State& x) const;
+    // State latencyCompensate(const State& x) const;
 
     /// Signed cross-track distance from x to the nearest projected point.
-    double crossTrackError(
-        const State& x,
-        const ProjectionResult& proj,
-        const Path& path) const;
+    // double crossTrackError(
+    //     const State& x,
+    //     const ProjectionResult& proj,
+    //     const Path& path) const;
 
     /// True when the remaining path length is below params_.goal_threshold.
     bool nearGoal(const Path& path, const ProjectionResult& proj) const;

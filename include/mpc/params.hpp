@@ -46,32 +46,19 @@ struct MPCParams
     double Q_xy_terminal = 50.0;    // elevated position weight at step N
     double Q_theta_terminal = 30.0;  // elevated heading weight  at step N
 
-    // ── Horizon weight decay removed; per-step decay is fixed to 1.0.
-
     // ── Control cost ─────────────────────────────────────────────────
     double R_v = 0.0;      // effort on v
     double R_omega = 0.0;  // effort on ω
 
     // ── Smoothness cost (penalises Δu between consecutive steps) ──────
-    double R_rate_v = 0.5;      // weight on (v_k − v_{k-1})²
-    double R_rate_omega = 0.5;  // weight on (ω_k − ω_{k-1})²
-
-    // ── Noise deadband ────────────────────────────────────────────────
-    double d_deadband = 0.015;  // ignore tracking errors below this [m]
-
-    // ── Adaptive corridor ─────────────────────────────────────────────
-    // When cross-track error exceeds d_hard, scale the corridor width up
-    // by this factor so the solver remains feasible while recovering.
-    double adaptive_corridor_scale = 1.0;
+    double R_rate_v = 1.0;      // weight on (v_k − v_{k-1})²
+    double R_rate_omega = 1.0;  // weight on (ω_k − ω_{k-1})²
 
     // ── Initial Funneling ─────────────────────────────────────────────
     // If the robot starts outside the corridor, dynamically widen the
     // bounds at k=0 to swallow the error, then exponentially decay the
     // width back to d_hard over this many steps.
     double funnel_decay_tau = 5.0;
-
-    // ── Velocity reduction under error ────────────────────────────────
-    // (Velocity reduction under lateral error removed)
 
     // ── Reference blending ────────────────────────────────────────────
     // Smooths abrupt same-path numerical jitter: ref = α·new + (1−α)·old.
@@ -97,8 +84,6 @@ struct MPCParams
     // can over-correct at high speed; smaller values are gentler.
     double stanley_k = 2.5;
     double stanley_v_min = 0.15;  // [m/s]
-
-    // (Heading-weight scaling removed)
 
     // ── Near-goal detection ───────────────────────────────────────────
     // When remaining path length drops below this, enforce v_N = 0.

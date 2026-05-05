@@ -1,8 +1,11 @@
 #pragma once
 
 #include "types.hpp"
-#include <vector>
+
 #include <Eigen/Dense>
+
+#include <vector>
+
 
 namespace mpc
 {

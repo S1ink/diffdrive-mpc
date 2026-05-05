@@ -26,8 +26,9 @@
 
 #include "mpc/qp_builder.hpp"
 
-#include <cassert>
 #include <cmath>
+#include <cassert>
+
 
 namespace mpc
 {
@@ -254,8 +255,6 @@ QP QPBuilder::build(
     //
     //  Row A:  +n·x − ε ≤  d_k + c
     //  Row B:  −n·x − ε ≤  d_k − c
-    //
-    // Bug #4 fix: loop runs k = 0…N so that x_N is corridor-constrained.
     //
     // Funnel fix: d_k is the per-step effective width computed from the
     //   initial exceedance.  Previously ctx.d_hard_eff was written to qp.u()

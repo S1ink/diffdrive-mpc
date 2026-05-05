@@ -118,6 +118,8 @@ def load_from_binary(binary_path: str, args):
     cmd = [binary_path]
     if args.scenario: cmd.extend(["--scenario", str(args.scenario)])
     if args.path: cmd.extend(["--path", args.path])
+    if getattr(args, "noisy", False):
+        cmd.append("--noisy")
     print(f"[plot_sim] Running {' '.join(cmd)} …", file=sys.stderr)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -490,6 +492,7 @@ def main():
     ap.add_argument("--data",     default="sim_data.jsonl")
     ap.add_argument("--scenario", type=int, help="C++ scenario ID")
     ap.add_argument("--path",     type=str, help="Custom path file")
+    ap.add_argument("--noisy",    action="store_true", help="Run sim binary with sensor noise enabled")
     ap.add_argument("--draw",     action="store_true", help="Draw path interactively")
     ap.add_argument("--fps",      type=int, default=20)
     ap.add_argument("--save",     help="Save animation to file (MP4 or GIF)")

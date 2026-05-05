@@ -21,26 +21,11 @@
 using namespace mpc;
 using namespace mpc::sim;
 
+
 int main(int argc, char** argv)
 {
     // ── Controller parameters ─────────────────────────────────────────────
     MPCParams p;
-    // Uncomment / tweak individual fields here as needed:
-    // p.N         = 20;    // will be raised to minBrakingSteps() if smaller
-    // p.dt        = 0.05;
-    // p.v_ref     = 0.3;
-    // p.v_max     = 0.5;
-    // p.v_min     = 0.0;
-    // p.omega_max = 1.5;
-    // p.a_max     = 1.0;
-    // p.alpha_max = 2.0;
-    // p.d_hard    = 0.05;
-    // p.w_slack   = 5000.0;
-    // p.Q_xy      = 60.0;
-    // p.Q_theta   = 30.0;
-    // p.blend_alpha       = 0.7;
-    // p.goal_threshold    = 0.3;
-
     MPCController ctrl(p);
     // p.N may have been raised by the controller — use ctrl.debugInfo() or
     // re-read p after construction if you need the effective value.
@@ -51,6 +36,7 @@ int main(int argc, char** argv)
     // ── CLI parsing ───────────────────────────────────────────────────────
     int scenario = 0;
     std::string custom_path_file;
+    bool noisy = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -62,6 +48,10 @@ int main(int argc, char** argv)
         if (arg == "--path" && i + 1 < argc)
         {
             custom_path_file = argv[++i];
+        }
+        if (arg == "--noisy")
+        {
+            noisy = true;
         }
     }
 
@@ -125,10 +115,10 @@ int main(int argc, char** argv)
                       << " (t=" << sim_t << "s)\n";
         }
 
-        // Add sensor noise before passing state to the controller.
-        const State x_noisy = noise.apply(x);
+        // Add sensor noise before passing state to the controller if enabled.
+        const State x_noisy = noisy ? noise.apply(x) : x;
 
-        const Control u = ctrl.update(x, path);
+        const Control u = ctrl.update(x_noisy, path);
 
         // Optionally prune traversed path segments (uncomment to enable):
         const size_t pruned = ctrl.pruneTraversedSegments(path);
@@ -137,7 +127,7 @@ int main(int argc, char** argv)
                       << " segment(s), path now " << path.size() << " pts\n";
 
         const DebugInfo& dbg = ctrl.debugInfo();
-        logger.logFrame(sim_t, x, u, path, dbg);
+        logger.logFrame(sim_t, x_noisy, u, path, dbg);
 
         // Advance ground-truth state with the clean (noiseless) plant model.
         x = plantStep(x, u, p.dt);

@@ -13,15 +13,16 @@
 //   • FrameLogger       — JSON-lines frame builder and file writer
 // =============================================================================
 
-#include "mpc/mpc_controller.hpp"
 #include "mpc/path.hpp"
 #include "mpc/types.hpp"
+#include "mpc/mpc_controller.hpp"
 
-#include <fstream>
 #include <random>
 #include <string>
-#include <utility>
 #include <vector>
+#include <fstream>
+#include <utility>
+
 
 namespace mpc
 {

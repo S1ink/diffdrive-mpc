@@ -1,11 +1,12 @@
 #pragma once
 
 #include "types.hpp"
+#include "params.hpp"
 #include "reference.hpp"
 #include "linearization.hpp"
-#include "params.hpp"
 
 #include <Eigen/Sparse>
+
 
 namespace mpc
 {

@@ -1,5 +1,7 @@
 #include "mpc/linearization.hpp"
+
 #include <cmath>
+
 
 namespace mpc
 {

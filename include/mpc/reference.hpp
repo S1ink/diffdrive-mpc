@@ -1,12 +1,14 @@
 #pragma once
 
-#include "types.hpp"
 #include "path.hpp"
-#include "projection.hpp"
+#include "types.hpp"
 #include "params.hpp"
+#include "projection.hpp"
+#include "path_smoother.hpp"
 
 #include <vector>
 #include <Eigen/Dense>
+
 
 namespace mpc
 {
@@ -26,7 +28,9 @@ struct Reference
 class ReferenceGenerator
 {
 public:
-    explicit ReferenceGenerator(const MPCParams& p) : params_(p) {}
+    explicit ReferenceGenerator(const MPCParams& p) : params_(p), smoother_(p)
+    {
+    }
 
     /// Build a horizon-length reference starting from the current projection.
     ///
@@ -53,11 +57,7 @@ public:
 
 private:
     MPCParams params_;
-
-    // ── Internal helpers ──────────────────────────────────────────────
-
-    /// Arc length remaining from (idx, t) to the end of the path [m].
-    double distToEnd(const Path& path, size_t idx, double t) const;
+    PathSmoother smoother_;
 };
 
 }  // namespace mpc

@@ -29,10 +29,12 @@
 #include "params.hpp"
 
 #include <Eigen/Dense>
+
 #include <limits>
 #include <numbers>
 #include <variant>
 #include <vector>
+
 
 namespace mpc
 {

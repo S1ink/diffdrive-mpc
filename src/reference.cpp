@@ -48,11 +48,11 @@
 // =============================================================================
 
 #include "mpc/reference.hpp"
-#include "mpc/path_smoother.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+
 
 namespace mpc
 {
@@ -64,27 +64,6 @@ struct VelocityEvent
     double s;      // arc-length position from smooth path start [m]
     double v_lim;  // maximum speed when arriving at s [m/s]
 };
-
-// ── distToEnd ─────────────────────────────────────────────────────────────────
-
-double ReferenceGenerator::distToEnd(const Path& path, size_t idx, double t)
-    const
-{
-    if (idx >= path.size() - 1)
-    {
-        return 0.0;
-    }
-
-    const double seg_len = (path.pts[idx + 1].pos - path.pts[idx].pos).norm();
-    double d = (1.0 - t) * seg_len;
-
-    for (size_t i = idx + 1; i < path.size() - 1; ++i)
-    {
-        d += (path.pts[i + 1].pos - path.pts[i].pos).norm();
-    }
-
-    return d;
-}
 
 // ── Main generator ────────────────────────────────────────────────────────────
 
@@ -108,8 +87,7 @@ Reference ReferenceGenerator::generate(
     // PathSmoother replaces each interior waypoint with a circular arc.
     // All subsequent sampling is done on this smooth path rather than on
     // the raw polyline, giving kinematically continuous reference headings.
-    PathSmoother smoother(params_);
-    const PathSmoother::SmoothedPath sp = smoother.smooth(path);
+    const PathSmoother::SmoothedPath sp = smoother_.smooth(path);
 
     // ── Fallback: degenerate / very short path ─────────────────────────
     if (sp.empty() || sp.total < 1e-6)

@@ -14,15 +14,15 @@ struct ProjectionResult
     Eigen::Vector2d proj = Eigen::Vector2d::Zero();
 };
 
-/// Projects the robot onto the path.
-///
-/// Key properties vs. the original:
-///   - Stateful: remembers the last matched segment so the search is always
-///     forward-only (avoids re-snapping to a behind segment).
-///   - Hysteresis: the tracked segment index only advances when t > seg_advance_t,
-///     preventing rapid flipping near segment boundaries.
-///   - Bounded look-ahead: searches at most `look_ahead` segments ahead of the
-///     last matched one, so the cost is O(look_ahead) not O(path length).
+// Projects the robot onto the path.
+//
+// Key properties vs. the original:
+//   - Stateful: remembers the last matched segment so the search is always
+//     forward-only (avoids re-snapping to a behind segment).
+//   - Hysteresis: the tracked segment index only advances when t > seg_advance_t,
+//     preventing rapid flipping near segment boundaries.
+//   - Bounded look-ahead: searches at most `look_ahead` segments ahead of the
+//     last matched one, so the cost is O(look_ahead) not O(path length).
 class Projector
 {
 public:
