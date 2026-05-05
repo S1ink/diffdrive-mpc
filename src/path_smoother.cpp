@@ -1,14 +1,3 @@
-// =============================================================================
-// path_smoother.cpp — PathSmoother implementation
-//
-// Geometry ported from util::PathSampler (path_sampler.cpp / .hpp), adapted
-// for:
-//   • double precision (not float)
-//   • world-frame coordinates (not vehicle-relative)
-//   • MPC MPCParams instead of separate constraint setters
-//   • SmoothedPath::project() + sampleAt() instead of sampleStanley()
-// =============================================================================
-
 #include "mpc/path_smoother.hpp"
 
 #include <algorithm>
@@ -16,20 +5,19 @@
 #include <cmath>
 #include <numbers>
 
+
 namespace mpc
 {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// File-scope geometry helpers (mirror of PathSampler's constexpr helpers)
-// ─────────────────────────────────────────────────────────────────────────────
+// File-scope geometry helpers (mirror of PathSampler helpers)
 
 namespace
 {
 
-// tan(θ/2)
+// tan(theta/2)
 static inline double halfTan(double theta) { return std::tan(theta * 0.5); }
 
-// cos(θ/2) / (1 − cos(θ/2))
+// cos(theta/2) / (1 - cos(theta/2))
 // Used to derive an initial radius proportional to the junction sharpness.
 static inline double rho(double theta)
 {
@@ -37,7 +25,7 @@ static inline double rho(double theta)
     return a / (1.0 - a + 1e-12);
 }
 
-// Wrap angle to [-π, π]
+// Wrap angle to [-pi, pi]
 static inline double wrapAngle(double a)
 {
     constexpr double PI = std::numbers::pi;
@@ -55,9 +43,7 @@ static inline double wrapAngle(double a)
 
 }  // namespace
 
-// ─────────────────────────────────────────────────────────────────────────────
 // SmoothedPath helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 int PathSmoother::SmoothedPath::segAt(double s) const
 {
@@ -65,13 +51,13 @@ int PathSmoother::SmoothedPath::segAt(double s) const
     {
         return 0;
     }
-    // upper_bound → first cum > s → segment index = that - 1
+    // upper_bound -> first cum > s -> segment index = that - 1
     const auto it = std::upper_bound(cum.begin(), cum.end(), s);
     const int idx = static_cast<int>(it - cum.begin()) - 1;
     return std::clamp(idx, 0, static_cast<int>(segs.size()) - 1);
 }
 
-// ── project ──────────────────────────────────────────────────────────────────
+// project
 
 std::pair<double, Eigen::Vector2d> PathSmoother::SmoothedPath::project(
     const Eigen::Vector2d& p) const
@@ -123,7 +109,7 @@ std::pair<double, Eigen::Vector2d> PathSmoother::SmoothedPath::project(
             double theta =
                 std::atan2(p.y() - seg.center.y(), p.x() - seg.center.x());
 
-            // Try ±2π aliases so we can land inside [lo, hi]
+            // Try +/- 2*pi aliases so we can land inside [lo, hi]
             if (!(lo <= theta && theta <= hi))
             {
                 const double tp = theta + PI2;
@@ -168,7 +154,7 @@ std::pair<double, Eigen::Vector2d> PathSmoother::SmoothedPath::project(
     return {best_s, best_pt};
 }
 
-// ── sampleAt ─────────────────────────────────────────────────────────────────
+// sampleAt
 
 PathSmoother::SmoothSample PathSmoother::SmoothedPath::sampleAt(
     double s,
@@ -227,9 +213,7 @@ PathSmoother::SmoothSample PathSmoother::SmoothedPath::sampleAt(
     return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // PathSmoother::buildJunctions
-// ─────────────────────────────────────────────────────────────────────────────
 
 void PathSmoother::buildJunctions(
     const Path& path,
@@ -243,7 +227,7 @@ void PathSmoother::buildJunctions(
 
     assert(n_juncs >= 1);
 
-    // ── Segment lengths ────────────────────────────────────────────────
+    // Segment lengths
     seg_lengths.resize(n_segs);
     for (int i = 0; i < n_segs; ++i)
     {
@@ -252,29 +236,14 @@ void PathSmoother::buildJunctions(
                              .norm();
     }
 
-    // ── Radius caps ────────────────────────────────────────────────────
-    //
-    // Two independent upper bounds are applied to each junction radius:
-    //
-    //   r_kin  = v_max / ω_max
-    //      The robot must be able to traverse the arc without exceeding
-    //      ω_max at full speed.
-    //
-    //   r_corr = d_hard · ρ(θ)   where  ρ(θ) = cos(θ/2) / (1 − cos(θ/2))
-    //      The maximum deviation of the arc from the raw corner vertex is
-    //        deviation = r · (1 − cos(θ/2)) / cos(θ/2)  =  r / ρ(θ)
-    //      Requiring deviation ≤ d_hard gives  r ≤ d_hard · ρ(θ).
-    //      This keeps the smooth arc inside the MPC corridor at all times,
-    //      preventing the robot from being halted for leaving the corridor
-    //      on tight corners.
-    //
-    // Note: ρ(θ) → ∞ as θ → 0 (near-straight), so r_corr dominates only
-    // on tight turns where the deviation would otherwise be large.
+    // Radius caps: kinematic cap r_kin = v_max / omega_max and geometric
+    // cap r_corr = d_hard * rho(theta). The chosen radius is the tighter
+    // of these bounds.
     const double r_kin = (params_.omega_max > 1e-9)
                              ? params_.v_max / params_.omega_max
                              : std::numeric_limits<double>::max();
 
-    // ── Initial junction radii ─────────────────────────────────────────
+    // Initial junction radii
     half_tans.resize(n_juncs);
     juncs.resize(n_juncs);
 
@@ -289,13 +258,13 @@ void PathSmoother::buildJunctions(
                 .normalized();
 
         const double cos_a = std::clamp(s_in.dot(s_out), -1.0, 1.0);
-        juncs[j].theta = std::acos(cos_a);  // exterior turn angle ∈ [0, π]
+        juncs[j].theta = std::acos(cos_a);  // exterior turn angle in [0, pi]
         half_tans[j] = halfTan(juncs[j].theta);
 
-        // Corridor deviation cap:  r ≤ d_hard · ρ(θ)
-        // ρ(θ) is the same helper used by PathSampler for the same purpose.
-        // For θ near π (U-turn), ρ → 0 and r_corr → 0, which is correct:
-        // a near-180° turn cannot be smoothed without leaving the corridor,
+        // Corridor deviation cap: r <= d_hard * rho(theta)
+        // rho(theta) is the same helper used by PathSampler for the same purpose.
+        // For theta near pi (U-turn), rho -> 0 and r_corr -> 0, which is correct:
+        // a near-180-degree turn cannot be smoothed without leaving the corridor,
         // so no arc is inserted and the robot must turn on the spot.
         const double r_corr = params_.d_hard * rho(juncs[j].theta);
 
@@ -315,10 +284,7 @@ void PathSmoother::buildJunctions(
         juncs[j].radius = r;
     }
 
-    // ── Multi-pass overlap resolution (forward + backward sweeps) ─────
-    //
-    // Identical logic to PathSampler::optimizeJunctions().
-    // 5 forward+backward pairs is sufficient for all practical paths.
+    // Multi-pass overlap resolution (forward + backward sweeps).
     constexpr int kSweepPairs = 5;
     for (int sweep = 0; sweep < kSweepPairs; ++sweep)
     {
@@ -340,7 +306,7 @@ void PathSmoother::buildJunctions(
         }
     }
 
-    // ── Finalise: compute derived quantities ───────────────────────────
+    // Finalise: compute derived quantities
     for (int j = 0; j < n_juncs; ++j)
     {
         juncs[j].tan_off = juncs[j].radius * half_tans[j];
@@ -349,9 +315,7 @@ void PathSmoother::buildJunctions(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // PathSmoother::optimizeJunction
-// ─────────────────────────────────────────────────────────────────────────────
 
 void PathSmoother::optimizeJunction(
     size_t seg_i,
@@ -411,9 +375,7 @@ void PathSmoother::optimizeJunction(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // PathSmoother::smooth
-// ─────────────────────────────────────────────────────────────────────────────
 
 PathSmoother::SmoothedPath PathSmoother::smooth(const Path& path) const
 {
@@ -424,7 +386,7 @@ PathSmoother::SmoothedPath PathSmoother::smooth(const Path& path) const
         return sp;  // empty
     }
 
-    // ── Trivial case: two-point path = single line ─────────────────────
+    // Trivial case: two-point path = single line
     if (path.size() == 2)
     {
         const Eigen::Vector2d start = path.pts[0].pos;
@@ -447,7 +409,7 @@ PathSmoother::SmoothedPath PathSmoother::smooth(const Path& path) const
         return sp;
     }
 
-    // ── General case: build junctions ─────────────────────────────────
+    // General case: build junctions
     std::vector<Junction> juncs;
     std::vector<double> seg_lengths, half_tans;
     buildJunctions(path, juncs, seg_lengths, half_tans);
@@ -491,7 +453,7 @@ PathSmoother::SmoothedPath PathSmoother::smooth(const Path& path) const
             path.pts[static_cast<size_t>(i + 2)].pos;
         const Junction& jn = juncs[static_cast<size_t>(i)];
 
-        // ── Degenerate: near-straight junction → straight through ──────
+        // Degenerate: near-straight junction -> straight through
         if (jn.radius < 1e-9 || jn.theta < 1e-4)
         {
             push_line(prev_end, curr_pt);
@@ -499,7 +461,7 @@ PathSmoother::SmoothedPath PathSmoother::smooth(const Path& path) const
         }
         else
         {
-            // ── Tangent directions ────────────────────────────────────────
+            // Tangent directions
             const Eigen::Vector2d s1 = (curr_pt - prev_pt).normalized();
             const Eigen::Vector2d s2 = (next_pt - curr_pt).normalized();
 
@@ -515,8 +477,8 @@ PathSmoother::SmoothedPath PathSmoother::smooth(const Path& path) const
 
             push_line(prev_end, arc_beg);
 
-            // ── Arc center (perpendicular to s1, toward inside of turn) ───
-            // 2-D cross product sign: s1 × s2 > 0 → center is on the left
+            // Arc center (perpendicular to s1, toward inside of turn)
+            // 2-D cross product sign: s1 x s2 > 0 -> center is on the left
             const bool center_left = (s1.x() * s2.y() > s1.y() * s2.x());
             const Eigen::Vector2d to_center =
                 center_left ? Eigen::Vector2d{-s1.y(), s1.x()}

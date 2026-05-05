@@ -1,8 +1,10 @@
 #pragma once
 
-#include "types.hpp"
 #include "path.hpp"
+#include "types.hpp"
+
 #include <limits>
+
 
 namespace mpc
 {
@@ -14,20 +16,13 @@ struct ProjectionResult
     Eigen::Vector2d proj = Eigen::Vector2d::Zero();
 };
 
-/// Projects the robot onto the path.
-///
-/// Key properties vs. the original:
-///   - Stateful: remembers the last matched segment so the search is always
-///     forward-only (avoids re-snapping to a behind segment).
-///   - Hysteresis: the tracked segment index only advances when t > seg_advance_t,
-///     preventing rapid flipping near segment boundaries.
-///   - Bounded look-ahead: searches at most `look_ahead` segments ahead of the
-///     last matched one, so the cost is O(look_ahead) not O(path length).
+// Projects the robot onto the path.
+// Stateful, forward-only projection with hysteresis and bounded look-ahead.
 class Projector
 {
 public:
-    /// Reset to the beginning of the path (call when the path changes
-    /// drastically or the robot is re-localised far from the current position).
+    // Reset to the beginning of the path (call when the path changes
+    // drastically or the robot is re-localised far from the current position).
     void reset() { last_segment_ = 0; }
 
     ProjectionResult project(const State& x, const Path& path);

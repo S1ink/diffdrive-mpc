@@ -1,16 +1,16 @@
 #include "mpc/mpc_controller.hpp"
 
-#include <chrono>
-
-#include <algorithm>
-#include <cassert>
 #include <cmath>
+#include <chrono>
+#include <cassert>
 #include <iostream>
+#include <algorithm>
+
 
 namespace mpc
 {
 
-// ── Construction / reset ─────────────────────────────────────────────────────
+// Construction / reset
 
 MPCController::MPCController(const MPCParams& p) :
     params_(p),
@@ -19,16 +19,7 @@ MPCController::MPCController(const MPCParams& p) :
     linearizer_(p.dt),
     qp_builder_(p)
 {
-    // Ensure the horizon covers the complete maximum-braking distance.
-    //
-    // The reference generator's backward-pass velocity profile guarantees
-    // that v_profile[k] already accounts for all upcoming speed limits, but
-    // only for events that lie within the horizon.  If N < minBrakingSteps()
-    // a corner whose braking would need to begin BEFORE the first horizon
-    // step is invisible to the planner: the robot would enter it too fast.
-    //
-    // We raise N here (never lower it) so that no matter what the caller set
-    // in MPCParams, the solver always looks far enough ahead.
+    // Ensure horizon covers full braking distance; raise N if too small.
     const int n_brake = params_.minBrakingSteps();
     if (params_.N < n_brake)
     {
@@ -52,8 +43,6 @@ void MPCController::reset()
     debug_info_ = DebugInfo{};
 }
 
-// ── pruneTraversedSegments ────────────────────────────────────────────────────────
-
 size_t MPCController::pruneTraversedSegments(Path& path)
 {
     const size_t n_remove = debug_info_.proj_segment_index;
@@ -64,11 +53,8 @@ size_t MPCController::pruneTraversedSegments(Path& path)
     path.pts.erase(
         path.pts.begin(),
         path.pts.begin() + static_cast<std::ptrdiff_t>(n_remove));
-    // Path hash changes next cycle → projector_.reset() runs automatically.
     return n_remove;
 }
-
-// ── Path hash ─────────────────────────────────────────────────────────────────
 
 size_t MPCController::hashPath(const Path& path)
 {
@@ -85,8 +71,7 @@ size_t MPCController::hashPath(const Path& path)
     return h;
 }
 
-// ── Main control cycle ────────────────────────────────────────────────────────
-
+// Main control cycle: compute control for one update.
 Control MPCController::update(const State& x_measured, const Path& path)
 {
     const auto t0 = std::chrono::high_resolution_clock::now();
@@ -97,20 +82,10 @@ Control MPCController::update(const State& x_measured, const Path& path)
         return {0.0, 0.0};
     }
 
-    // ── A. Trust measured state; predict forward by one dt ────────────
+    // A. Predict forward to compensate latency.
     const State x_pred = latencyCompensate(x_measured);
 
-    // ── C1. Path change detection (hash-based) ────────────────────────
-    //
-    // Compare the full path geometry each cycle.  On any change we reset
-    // the projector so segment tracking restarts from 0 via bisector
-    // traversal.  This is more reliable than the previous jump-distance
-    // heuristic, which could miss in-place path modifications and trigger
-    // spuriously on normal path progress.
-    //
-    // v_cur (= u_prev_.v) is robot state and is intentionally preserved
-    // across path changes so the velocity profile seeds from a realistic
-    // initial speed.
+    // C1. Path change detection (hash-based). Reset projector on change.
     const size_t new_hash = hashPath(path);
     const bool path_changed = !has_prev_ref_ || (new_hash != path_hash_);
     if (path_changed)
@@ -121,58 +96,28 @@ Control MPCController::update(const State& x_measured, const Path& path)
 
     const ProjectionResult proj = projector_.project(x_pred, path);
 
-    // ── C2. Generate reference, seeded with the robot's current speed ──
-    //
-    // Passing u_prev_.v as v_cur seeds the look-ahead braking integrator
-    // at the actual robot speed, giving a kinematically-continuous profile.
-    // new_ref.cte is measured against the smooth arc rather than the raw
-    // polyline, so corners don't produce spuriously large CTE values.
+    // C2. Generate reference seeded with current speed.
     Reference new_ref = ref_gen_.generate(
         path,
-        proj,
+        new_hash,
         Eigen::Vector2d(x_pred.x, x_pred.y),
         u_prev_.v);
 
-    // ── D1+D3. Cross-track error with deadband ─────────────────────────
+    // Cross-track error measured against the smooth path.
     const double cte_raw = new_ref.cte;
-    double cte = cte_raw;
-    if (std::abs(cte) < params_.d_deadband)
-    {
-        cte = 0.0;
-    }
 
-    // ── D2. Velocity scale under lateral error (removed)
-    // No per-cycle speed scaling; keep v_profile as generated.
-
-    // ── Fix 1: Stanley heading correction ────────────────────────────
-    //
-    // The reference heading from the generator always points along the
-    // path tangent.  When the robot is off-path this is wrong: the
-    // optimizer needs a target that first rotates the robot TOWARD the
-    // path, not one that tells it to drive parallel to a path it cannot
-    // yet reach.
-    //
-    // Stanley steering formula:
-    //   θ_ref_k += atan2(−stanley_k · cte_raw,  max(v_k, v_min))
-    //
-    // Properties:
-    //   cte = 0      → correction = 0  (pure path-tangent, no change)
-    //   cte > 0      → negative correction (rotate right, toward path)
-    //   v large      → small correction (gentle at speed, no over-steer)
-    //   v → 0        → bounded at ≈ ±atan(stanley_k·cte/v_min) ≤ 90°
-    //
-    // Applied to new_ref before blending so the blend also interpolates
-    // the corrected heading, not just the geometric one.
+    // Stanley heading correction: bias reference headings toward the path.
     {
         const double k = params_.stanley_k;
         const double v_min_st = params_.stanley_v_min;
+        const double decay = params_.stanley_decay;
         for (int kk = 0; kk <= params_.N; ++kk)
         {
             const double v_k = std::max(new_ref.v_profile[kk], v_min_st);
-            const double correction = std::atan2(-k * cte_raw, v_k);
+            const double correction =
+                std::atan2(-k * cte_raw, v_k) * std::exp(-decay * kk);
             double& th = new_ref.x_ref[kk].theta;
             th += correction;
-            // Normalise to [−π, π]
             while (th > M_PI)
             {
                 th -= 2.0 * M_PI;
@@ -184,11 +129,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
         }
     }
 
-    // ── C2. Blend with previous reference to smooth same-path updates ──
-    //
-    // Blending is suppressed when the path has changed: applying the old
-    // reference geometry to new corridor normals produces incorrect QP
-    // constraints, so the new reference is used as-is for that cycle.
+    // Blend with previous reference to smooth same-path updates.
     const Reference ref = (has_prev_ref_ && !path_changed)
                               ? blend(new_ref, ref_prev_, params_.blend_alpha)
                               : new_ref;
@@ -196,19 +137,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
     ref_prev_ = new_ref;
     has_prev_ref_ = true;
 
-    // ── D1. Adaptive corridor width ────────────────────────────────────
-    double d_hard_eff = params_.d_hard;
-    if (std::abs(cte) > params_.d_hard)
-    {
-        d_hard_eff = params_.d_hard * params_.adaptive_corridor_scale;
-    }
-
-    // ── F1. Heading weight (no adaptive scaling)
-    const double Q_theta_eff = params_.Q_theta;
-    const double Q_theta_terminal_eff = params_.Q_theta_terminal;
-
-    // ── Normalise reference headings (heading-wrap fix) ─────────────────
-    // Moved here so the recovery check below can read corrected heading at k=0.
+    // Normalise headings relative to the predicted robot heading.
     Reference ref_qp = ref;
     {
         const double anchor = x_pred.theta;
@@ -227,21 +156,20 @@ Control MPCController::update(const State& x_measured, const Path& path)
         }
     }
 
-    // ── C3. Near-goal detection ────────────────────────────────────────
-    // Terminal-v=0 only when BOTH near the path end AND laterally close.
+    // Near-goal detection: terminal v=0 only when near end and laterally close.
     const bool near =
-        nearGoal(path, proj) &&
+        (new_ref.remaining_arc < params_.goal_threshold) &&
         (std::abs(cte_raw) < params_.d_hard * params_.goal_cte_scale);
 
-    // ── Build QPContext ─────────────────────────────────────────
+    // Build QP context.
     QPContext ctx;
-    ctx.d_hard_eff = d_hard_eff;
+    ctx.d_hard_eff = params_.d_hard;
     ctx.cte_raw = cte_raw;
-    ctx.Q_theta_eff = Q_theta_eff;
-    ctx.Q_theta_terminal_eff = Q_theta_terminal_eff;
+    ctx.Q_theta_eff = params_.Q_theta;
+    ctx.Q_theta_terminal_eff = params_.Q_theta_terminal;
     ctx.near_goal = near;
 
-    // ── H. Linearise around previous predicted trajectory (SQP step) ──
+    // H. Linearise around previous predicted trajectory (SQP step).
     const int N = params_.N;
     std::vector<State> lin_traj(N);
     std::vector<Control> lin_ctrl(N);
@@ -256,23 +184,17 @@ Control MPCController::update(const State& x_measured, const Path& path)
     }
     const LinModel model = linearizer_.linearize(lin_traj, lin_ctrl);
 
-    // ── Build QP and solve with wall-clock timing ────────────────────
+    // Build QP and solve.
     const QP qp = qp_builder_.build(x_pred, u_prev_, ref_qp, model, ctx);
     const bool ok = solver_.update(qp, N);
 
-    // ── Populate debug snapshot ────────────────────────────────────────
+    // Populate debug snapshot.
     debug_info_.solver_ok = ok;
     debug_info_.cte_raw = cte_raw;
-    debug_info_.d_hard_eff = d_hard_eff;
-    debug_info_.v_scale = 1.0;  // no lateral-speed scaling
-    debug_info_.Q_theta_eff = Q_theta_eff;
     debug_info_.near_goal = near;
     debug_info_.proj_pt = proj.proj;
     debug_info_.proj_segment_index = proj.segment_index;
-    debug_info_.ref_traj = ref.x_ref;
-    debug_info_.seg_normals = ref.seg_normals;
-    debug_info_.proj_pts = ref.proj_pts;
-    debug_info_.v_profile = ref.v_profile;  // post-v_scale, post-blend
+    debug_info_.ref_snap = std::move(ref_qp);
     debug_info_.pred_traj =
         ok ? solver_.getStatePrediction() : std::vector<State>{};
 
@@ -280,7 +202,7 @@ Control MPCController::update(const State& x_measured, const Path& path)
                                std::chrono::high_resolution_clock::now() - t0)
                                .count();
 
-    // ── G. Failure fallback ────────────────────────────────────────────
+    // Failure fallback.
     if (!ok)
     {
         u_prev_.v *= params_.fallback_decay;
@@ -288,56 +210,22 @@ Control MPCController::update(const State& x_measured, const Path& path)
         return u_prev_;
     }
 
-    const Control u = solver_.getControl();
-    u_prev_ = u;
-    return u;
+    u_prev_ = solver_.getControl();
+    return u_prev_;
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
+// Private helpers
 
 State MPCController::latencyCompensate(const State& x) const
 {
+    if (iszero(params_.feedback_delay_s))
+    {
+        return x;
+    }
     return {
-        x.x + u_prev_.v * std::cos(x.theta) * params_.dt,
-        x.y + u_prev_.v * std::sin(x.theta) * params_.dt,
-        x.theta + u_prev_.omega * params_.dt};
-}
-
-double MPCController::crossTrackError(
-    const State& x,
-    const ProjectionResult& proj,
-    const Path& path) const
-{
-    const Eigen::Vector2d p(x.x, x.y);
-    const Eigen::Vector2d dir = path.segmentDir(proj.segment_index);
-    const Eigen::Vector2d n(-dir.y(), dir.x());
-    return n.dot(p - proj.proj);
-}
-
-double MPCController::distToEnd(const Path& path, const ProjectionResult& proj)
-    const
-{
-    size_t idx = proj.segment_index;
-    if (idx >= path.size() - 1)
-    {
-        return 0.0;
-    }
-
-    const double seg_len = (path.pts[idx + 1].pos - path.pts[idx].pos).norm();
-    double d = (1.0 - proj.t) * seg_len;
-
-    for (size_t i = idx + 1; i < path.size() - 1; ++i)
-    {
-        d += (path.pts[i + 1].pos - path.pts[i].pos).norm();
-    }
-
-    return d;
-}
-
-bool MPCController::nearGoal(const Path& path, const ProjectionResult& proj)
-    const
-{
-    return distToEnd(path, proj) < params_.goal_threshold;
+        x.x + u_prev_.v * std::cos(x.theta) * params_.feedback_delay_s,
+        x.y + u_prev_.v * std::sin(x.theta) * params_.feedback_delay_s,
+        x.theta + u_prev_.omega * params_.feedback_delay_s};
 }
 
 Reference MPCController::blend(

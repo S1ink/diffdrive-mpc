@@ -1,7 +1,9 @@
 #pragma once
 
-#include <vector>
 #include <Eigen/Dense>
+
+#include <vector>
+
 
 namespace mpc
 {
