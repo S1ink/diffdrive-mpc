@@ -15,6 +15,7 @@
 
 #include "mpc/path.hpp"
 #include "mpc/types.hpp"
+#include "mpc/params.hpp"
 #include "mpc/mpc_controller.hpp"
 
 #include <random>
@@ -28,6 +29,11 @@ namespace mpc
 {
 namespace sim
 {
+
+// Load MPCParams from a plain-text key = value file.
+// Throws std::runtime_error if the file cannot be opened.
+MPCParams loadParamsFromFile(const std::string& filepath);
+
 
 // Plant model
 

@@ -159,6 +159,8 @@ Control MPCController::update(const State& x_measured, const Path& path)
     // Near-goal detection: terminal v=0 only when near end and laterally close.
     const bool near =
         (new_ref.remaining_arc < params_.goal_threshold) &&
+        (path.pts.back().pos - Eigen::Vector2d{x_pred.x, x_pred.y}).norm() <
+            params_.goal_threshold &&
         (std::abs(cte_raw) < params_.d_hard * params_.goal_cte_scale);
 
     // Build QP context.

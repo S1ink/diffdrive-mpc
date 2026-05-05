@@ -9,12 +9,188 @@
 #include <iomanip>
 #include <sstream>
 #include <iostream>
+#include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 
 namespace mpc
 {
 namespace sim
 {
+
+MPCParams loadParamsFromFile(const std::string& filepath)
+{
+    std::ifstream file(filepath);
+    if (!file.is_open())
+    {
+        throw std::runtime_error(
+            "[config_loader] Cannot open config file: " + filepath);
+    }
+
+    std::unordered_map<std::string, double> kv;
+
+    std::string line;
+    int lineno = 0;
+    while (std::getline(file, line))
+    {
+        ++lineno;
+
+        // Strip leading whitespace
+        const size_t first = line.find_first_not_of(" \t");
+        if (first == std::string::npos || line[first] == '#')
+        {
+            continue;  // blank or comment line
+        }
+
+        const size_t eq = line.find('=', first);
+        if (eq == std::string::npos)
+        {
+            std::cerr << "[config_loader] Line " << lineno
+                      << ": missing '=', skipping.\n";
+            continue;
+        }
+
+        // Extract and trim key
+        std::string key = line.substr(first, eq - first);
+        const size_t key_end = key.find_last_not_of(" \t");
+        if (key_end == std::string::npos)
+        {
+            continue;
+        }
+        key = key.substr(0, key_end + 1);
+
+        // Extract and trim value (strip inline comments)
+        std::string val = line.substr(eq + 1);
+        const size_t val_start = val.find_first_not_of(" \t");
+        if (val_start == std::string::npos)
+        {
+            continue;  // empty value
+        }
+        val = val.substr(val_start);
+
+        // Strip inline comment
+        const size_t comment_pos = val.find('#');
+        if (comment_pos != std::string::npos)
+        {
+            val = val.substr(0, comment_pos);
+        }
+
+        // Trim trailing whitespace / CR
+        const size_t val_end = val.find_last_not_of(" \t\r\n");
+        if (val_end == std::string::npos)
+        {
+            continue;
+        }
+        val = val.substr(0, val_end + 1);
+
+        if (val.empty())
+        {
+            continue;
+        }
+
+        // Parse numeric value
+        try
+        {
+            kv[key] = std::stod(val);
+        }
+        catch (const std::exception&)
+        {
+            std::cerr << "[config_loader] Line " << lineno
+                      << ": cannot parse value for '" << key << "' = '" << val
+                      << "', skipping.\n";
+        }
+    }
+
+    // Known keys (used to warn about unrecognised entries)
+    static const std::unordered_set<std::string> known_keys = {
+        "N",
+        "dt",
+        "feedback_delay_s",
+        "v_max",
+        "v_min",
+        "omega_max",
+        "a_max",
+        "alpha_max",
+        "d_hard",
+        "w_slack",
+        "Q_xy",
+        "Q_theta",
+        "Q_xy_terminal",
+        "Q_theta_terminal",
+        "R_v",
+        "R_omega",
+        "R_rate_v",
+        "R_rate_omega",
+        "funnel_decay_tau",
+        "blend_alpha",
+        "stanley_k",
+        "stanley_v_min",
+        "stanley_decay",
+        "goal_threshold",
+        "goal_cte_scale",
+        "goal_stop_vel",
+        "fallback_decay",
+    };
+    for (const auto& [k, _] : kv)
+    {
+        if (!known_keys.count(k))
+        {
+            std::cerr << "[config_loader] Warning: unrecognised key '" << k
+                      << "' will be ignored.\n";
+        }
+    }
+
+    // Apply values to a default-constructed MPCParams
+    MPCParams p;
+
+    auto set = [&](const std::string& k, double& field)
+    {
+        const auto it = kv.find(k);
+        if (it != kv.end())
+        {
+            field = it->second;
+        }
+    };
+    auto setInt = [&](const std::string& k, int& field)
+    {
+        const auto it = kv.find(k);
+        if (it != kv.end())
+        {
+            field = static_cast<int>(it->second);
+        }
+    };
+
+    setInt("N", p.N);
+    set("dt", p.dt);
+    set("feedback_delay_s", p.feedback_delay_s);
+    set("v_max", p.v_max);
+    set("v_min", p.v_min);
+    set("omega_max", p.omega_max);
+    set("a_max", p.a_max);
+    set("alpha_max", p.alpha_max);
+    set("d_hard", p.d_hard);
+    set("w_slack", p.w_slack);
+    set("Q_xy", p.Q_xy);
+    set("Q_theta", p.Q_theta);
+    set("Q_xy_terminal", p.Q_xy_terminal);
+    set("Q_theta_terminal", p.Q_theta_terminal);
+    set("R_v", p.R_v);
+    set("R_omega", p.R_omega);
+    set("R_rate_v", p.R_rate_v);
+    set("R_rate_omega", p.R_rate_omega);
+    set("funnel_decay_tau", p.funnel_decay_tau);
+    set("blend_alpha", p.blend_alpha);
+    set("stanley_k", p.stanley_k);
+    set("stanley_v_min", p.stanley_v_min);
+    set("stanley_decay", p.stanley_decay);
+    set("goal_threshold", p.goal_threshold);
+    set("goal_cte_scale", p.goal_cte_scale);
+    set("goal_stop_vel", p.goal_stop_vel);
+    set("fallback_decay", p.fallback_decay);
+
+    return p;
+}
 
 // Plant model
 
@@ -24,11 +200,11 @@ State plantStep(const State& x, const Control& u, double dt)
         x.x + u.v * std::cos(x.theta) * dt,
         x.y + u.v * std::sin(x.theta) * dt,
         x.theta + u.omega * dt};
-    }
+}
 
-    // Path factories
+// Path factories
 
-    Path makeStraightPath(double x_start, double x_end, double y, int pts)
+Path makeStraightPath(double x_start, double x_end, double y, int pts)
 {
     Path p;
     for (int i = 0; i <= pts; ++i)
@@ -152,9 +328,10 @@ void FrameLogger::logParams(const MPCParams& p, int max_steps)
 {
     std::ostringstream ss;
     ss << "{\"params\":{"
-       << "\"N\":" << p.N << ",\"dt\":" << p.dt  //<< ",\"v_ref\":" << p.v_ref
-       << ",\"v_max\":" << p.v_max << ",\"omega_max\":" << p.omega_max
-       << ",\"d_hard\":" << p.d_hard << ",\"max_steps\":" << max_steps << "}}";
+       << "\"N\":" << p.N << ",\"dt\":" << p.dt << ",\"v_max\":" << p.v_max
+       << ",\"v_min\":" << p.v_min  // needed by the Python visualiser
+       << ",\"omega_max\":" << p.omega_max << ",\"d_hard\":" << p.d_hard
+       << ",\"max_steps\":" << max_steps << "}}";
 
     const std::string line = ss.str();
     std::cout << line << "\n";

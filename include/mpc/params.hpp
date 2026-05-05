@@ -51,6 +51,7 @@ struct MPCParams
     // Near-goal detection
     double goal_threshold = 0.03;
     double goal_cte_scale = 2.0;
+    double goal_stop_vel = 0.01;
 
     // Solver fallback multiplier on failure
     double fallback_decay = 0.8;

@@ -8,15 +8,16 @@
 //   2. The top-level simulation loop: update -> log -> step -> terminate.
 // =============================================================================
 
-#include <cmath>
-#include <iostream>
-#include <string>
-
-#include "mpc/mpc_controller.hpp"
-#include "mpc/params.hpp"
 #include "mpc/path.hpp"
 #include "mpc/types.hpp"
 #include "sim_utils.hpp"
+#include "mpc/params.hpp"
+#include "mpc/mpc_controller.hpp"
+
+#include <cmath>
+#include <chrono>
+#include <string>
+#include <iostream>
 
 using namespace mpc;
 using namespace mpc::sim;
@@ -24,19 +25,15 @@ using namespace mpc::sim;
 
 int main(int argc, char** argv)
 {
-    // Controller parameters
-    MPCParams p;
-    MPCController ctrl(p);
-    // p.N may have been raised by the controller - use ctrl.debugInfo() or
-    // re-read p after construction if you need the effective value.
-
     // Simulation termination limits
     static constexpr int MAX_STEPS = 10000;
 
     // CLI parsing
     int scenario = 0;
     std::string custom_path_file;
+    std::string config_file;
     bool noisy = false;
+    bool prune = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -45,18 +42,45 @@ int main(int argc, char** argv)
         {
             scenario = std::stoi(argv[++i]);
         }
-        if (arg == "--path" && i + 1 < argc)
+        else if (arg == "--path" && i + 1 < argc)
         {
             custom_path_file = argv[++i];
         }
-        if (arg == "--noisy")
+        else if (arg == "--config" && i + 1 < argc)
+        {
+            config_file = argv[++i];
+        }
+        else if (arg == "--noisy")
         {
             noisy = true;
         }
+        else if (arg == "--prune")
+        {
+            prune = true;
+        }
     }
 
+    // Load controller parameters (from file if provided, otherwise defaults)
+    MPCParams p;
+    if (!config_file.empty())
+    {
+        try
+        {
+            p = loadParamsFromFile(config_file);
+            std::cerr << "[sim] Loaded MPC params from: " << config_file
+                      << "\n";
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "[sim] Error loading config file: " << e.what()
+                      << " -- using built-in defaults.\n";
+        }
+    }
+
+    MPCController ctrl(p);
+
     // Initial robot state and path
-    State x = {0.0, 0.25, 0.1};
+    State x;
     Path path;
 
     if (!custom_path_file.empty())
@@ -78,18 +102,24 @@ int main(int argc, char** argv)
     {
         switch (scenario)
         {
+            case 0:
+                x = {0.0, 0.0, M_PI};
+                path = makeStraightPath(0.0, 10.0, 0.0);
+                break;
             case 1:
+                x = {0.0, 0.25, 0.1};
                 path = makeSharpLPath();
                 break;
             case 2:
-                path = makeFigure8Path();
                 x = {0.0, 0.5, 0.0};
+                path = makeFigure8Path();
                 break;
             case 3:
-                path = makeStraightPath(0, 10);
                 x = {-2.0, 3.0, M_PI};
+                path = makeStraightPath(0, 10);
                 break;
             default:
+                x = {0.0, 0.0, 0.0};
                 path = makeStraightPath(0.0, 10.0, 0.0);
                 break;
         }
@@ -103,29 +133,35 @@ int main(int argc, char** argv)
     logger.logParams(p, MAX_STEPS);
 
     // Simulation loop
+    std::chrono::high_resolution_clock::time_point start =
+        std::chrono::high_resolution_clock::now();
     for (int step = 0; step < MAX_STEPS; ++step)
     {
         const double sim_t = step * p.dt;
 
         // Dynamic path update for the default scenario (scenario 0).
-        if (scenario == 0 && custom_path_file.empty() && step == 150)
-        {
-            path = makeStraightPath(10.0, 15.0, 0.3);
-            std::cerr << "[sim] Path updated at step " << step
-                      << " (t=" << sim_t << "s)\n";
-        }
+        // if (scenario == 0 && custom_path_file.empty() && step == 150)
+        // {
+        //     path = makeStraightPath(10.0, 15.0, 0.3);
+        //     std::cerr << "[sim] Path updated at step " << step
+        //               << " (t=" << sim_t << "s)\n";
+        // }
 
         // Add sensor noise before passing state to the controller if enabled.
         const State x_noisy = noisy ? noise.apply(x) : x;
 
         const Control u = ctrl.update(x_noisy, path);
 
-        // Optionally prune traversed path segments (uncomment to enable):
-        const size_t pruned = ctrl.pruneTraversedSegments(path);
-        if (pruned > 0)
+        // Prune traversed path segments when --prune is active.
+        if (prune)
         {
-            std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
-                      << " segment(s), path now " << path.size() << " pts\n";
+            const size_t pruned = ctrl.pruneTraversedSegments(path);
+            if (pruned > 0)
+            {
+                std::cerr << "[sim] t=" << sim_t << "s: pruned " << pruned
+                          << " segment(s), path now " << path.size()
+                          << " pts\n";
+            }
         }
 
         const DebugInfo& dbg = ctrl.debugInfo();
@@ -134,11 +170,11 @@ int main(int argc, char** argv)
         // Advance ground-truth state with the clean (noiseless) plant model.
         x = plantStep(x, u, p.dt);
 
-        // Termination: goal reached
-        if (dbg.near_goal)
+        if (dbg.near_goal && std::abs(u.v) < p.goal_stop_vel)
         {
             std::cerr << "[sim] Goal reached at t=" << sim_t + p.dt
-                      << "s (step " << step + 1 << ")\n";
+                      << "s (step " << step + 1 << ")"
+                      << "  v=" << u.v << " m/s\n";
             break;
         }
 
@@ -150,6 +186,12 @@ int main(int argc, char** argv)
             break;
         }
     }
+
+    std::cerr << "[sim] Sim completed in "
+              << (std::chrono::duration<double>(
+                      std::chrono::high_resolution_clock::now() - start))
+                     .count()
+              << "s\n";
 
     return 0;
 }
