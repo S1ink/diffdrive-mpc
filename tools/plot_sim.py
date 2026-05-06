@@ -390,7 +390,7 @@ def init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, ax_stats, params):
 # ---------------------------------------------------------------------
 # Pre-compute per-frame data arrays (done once, not per animation frame)
 # ---------------------------------------------------------------------
-def precompute(frames, params):
+def precompute(frames, params, random_mode=False):
     n  = len(frames)
     d  = {
         "t":        np.zeros(n),
@@ -404,7 +404,7 @@ def precompute(frames, params):
         "ok":       np.ones(n, dtype=bool),
     }
     for i, f in enumerate(frames):
-        d["t"][i]        = f["t"]
+        d["t"][i]        = f.get("t", i * params.get("dt", 0.05))
         d["rx"][i]       = f["robot"]["x"]
         d["ry"][i]       = f["robot"]["y"]
         d["rth"][i]      = f["robot"]["theta"]
@@ -414,29 +414,35 @@ def precompute(frames, params):
         d["solve_ms"][i] = f.get("solve_ms", 0.0)
         d["ok"][i]       = f.get("solver_ok", True)
 
+    # Normalise timestamps: subtract t0 so the array always starts at 0.0
+    # regardless of whether the source is sim-time (already near 0) or a
+    # wall-clock timestamp (potentially a large Unix epoch value).
+    d["t"] -= d["t"][0]
+
     # Cumulative distance travelled
     dx          = np.diff(d["rx"], prepend=d["rx"][0])
     dy          = np.diff(d["ry"], prepend=d["ry"][0])
     d["dist"]   = np.cumsum(np.sqrt(dx ** 2 + dy ** 2))
 
-    # Stage transition detection: a new stage begins whenever the path end
-    # point jumps by more than 1 m between consecutive frames.  This works
-    # for both random-staged runs and the standard scenario-0 path update.
+    # Stage transition detection: only active in --random mode.
+    # When enabled, a new stage is detected whenever the path end point jumps
+    # by more than 1 m between consecutive frames.
     stage_nums   = np.ones(n, dtype=int)
-    stage_frames = [0]   # frame index where each stage begins
-    prev_end     = None
-    cur_stage    = 1
-    for i, f in enumerate(frames):
-        path_pts = f.get("path", [])
-        if path_pts:
-            end = np.array(path_pts[-1], dtype=float)
-            if prev_end is not None:
-                dist_jump = np.linalg.norm(end - prev_end)
-                if dist_jump > 1.0:          # new path loaded
-                    cur_stage += 1
-                    stage_frames.append(i)
-            prev_end = end
-        stage_nums[i] = cur_stage
+    stage_frames = [0]
+    if random_mode:
+        prev_end  = None
+        cur_stage = 1
+        for i, f in enumerate(frames):
+            path_pts = f.get("path", [])
+            if path_pts:
+                end = np.array(path_pts[-1], dtype=float)
+                if prev_end is not None:
+                    dist_jump = np.linalg.norm(end - prev_end)
+                    if dist_jump > 1.0:
+                        cur_stage += 1
+                        stage_frames.append(i)
+                prev_end = end
+            stage_nums[i] = cur_stage
     d["stage"]        = stage_nums
     d["stage_frames"] = stage_frames   # list of frame indices
 
@@ -644,7 +650,8 @@ def _print_stats(frames, params):
     vs     = np.array([f["control"]["v"]     for f in frames])
     robots = np.array([[f["robot"]["x"], f["robot"]["y"]] for f in frames])
     n      = len(frames)
-    t_end  = frames[-1].get("t", n * params.get("dt", 0.05))
+    t_start = frames[0].get("t", 0.0)
+    t_end   = frames[-1].get("t", n * params.get("dt", 0.05)) - t_start
     last   = frames[-1]
 
     # Total path length
@@ -720,7 +727,7 @@ def main():
         _print_stats(frames, params)
         return
 
-    pre = precompute(frames, params)
+    pre = precompute(frames, params, random_mode=args.random)
 
     fig, ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, ax_stats = build_figure()
 
