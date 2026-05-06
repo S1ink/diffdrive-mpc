@@ -26,6 +26,9 @@ Usage
     python tools/plot_sim.py --file   sim_data.jsonl
     python tools/plot_sim.py --binary ./build/sim_test --save sim.mp4
     python tools/plot_sim.py --binary ./build/sim_test --noisy --prune
+    python tools/plot_sim.py --binary ./build/sim_test --random
+    python tools/plot_sim.py --binary ./build/sim_test --random --complexity 4 --stages 8
+    python tools/plot_sim.py --binary ./build/sim_test --random --seed 42
     python tools/plot_sim.py --binary ./build/sim_test \\
                              --data  my_run.jsonl     \\
                              --save  my_run.gif
@@ -75,6 +78,8 @@ C = {
     "stats_key":     "#9090bb",
     "stats_val":     "#e0e0ff",
     "stats_hi":      "#44aaff",
+    "stage_line":    "#ffdd44",  # stage boundary markers
+    "stage_marker":  "#ffdd44",
 }
 
 # ---------------------------------------------------------------------
@@ -117,8 +122,15 @@ def load_from_binary(binary_path: str, args):
     if args.scenario: cmd.extend(["--scenario", str(args.scenario)])
     if args.path:     cmd.extend(["--path", args.path])
     if args.config:   cmd.extend(["--config", args.config])
-    if getattr(args, "noisy", False): cmd.append("--noisy")
-    if getattr(args, "prune", False): cmd.append("--prune")
+    if getattr(args, "noisy",      False): cmd.append("--noisy")
+    if getattr(args, "prune",      False): cmd.append("--prune")
+    if getattr(args, "random",     False): cmd.append("--random")
+    if getattr(args, "complexity", None) is not None:
+        cmd.extend(["--complexity", str(args.complexity)])
+    if getattr(args, "stages",     None) is not None:
+        cmd.extend(["--stages", str(args.stages)])
+    if getattr(args, "seed",       None) is not None:
+        cmd.extend(["--seed", str(args.seed)])
     print(f"[plot_sim] Running {' '.join(cmd)}...", file=sys.stderr)
     # stdout is captured for parsing; stderr is inherited so binary status
     # messages (path updates, goal reached, stuck, etc.) print to the terminal.
@@ -335,6 +347,7 @@ def init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, ax_stats, params):
         ("Max |ω|",       "0.00 rad/s"),
         ("Avg |CTE|",     "0.00 m"),
         ("Max |CTE|",     "0.00 m"),
+        ("Stage",         "1"),
         ("Solver fails",  "0"),
     ]
     n_cols    = 3
@@ -356,6 +369,14 @@ def init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, ax_stats, params):
             color=C["stats_val"], fontsize=8, va="top", ha="right",
             fontweight="bold")
     arts["stats"] = stats_texts
+
+    # ---- Stage start markers (XY) -------------------------------------------
+    # One scatter point per stage start position; revealed as playback passes
+    # each transition.  Labelled with the stage number.
+    arts["stage_markers"] = ax_xy.scatter(
+        [], [], marker="D", s=45, color=C["stage_marker"],
+        zorder=10, label="stage start")
+    arts["stage_labels"]  = []   # populated in main() once pre is known
 
     # ---- Time cursors --------------------------------------------------------
     cursor_kw = dict(color=C["cursor"], alpha=0.3, linewidth=1, linestyle=":")
@@ -397,6 +418,27 @@ def precompute(frames, params):
     dx          = np.diff(d["rx"], prepend=d["rx"][0])
     dy          = np.diff(d["ry"], prepend=d["ry"][0])
     d["dist"]   = np.cumsum(np.sqrt(dx ** 2 + dy ** 2))
+
+    # Stage transition detection: a new stage begins whenever the path end
+    # point jumps by more than 1 m between consecutive frames.  This works
+    # for both random-staged runs and the standard scenario-0 path update.
+    stage_nums   = np.ones(n, dtype=int)
+    stage_frames = [0]   # frame index where each stage begins
+    prev_end     = None
+    cur_stage    = 1
+    for i, f in enumerate(frames):
+        path_pts = f.get("path", [])
+        if path_pts:
+            end = np.array(path_pts[-1], dtype=float)
+            if prev_end is not None:
+                dist_jump = np.linalg.norm(end - prev_end)
+                if dist_jump > 1.0:          # new path loaded
+                    cur_stage += 1
+                    stage_frames.append(i)
+            prev_end = end
+        stage_nums[i] = cur_stage
+    d["stage"]        = stage_nums
+    d["stage_frames"] = stage_frames   # list of frame indices
 
     return d
 
@@ -464,6 +506,15 @@ def make_update(frames, arts, params, pre):
         for cursor in arts["cursors"]:
             cursor.set_xdata([t, t])
 
+        # ---- Stage markers: show all transitions up to current frame ---------
+        sf     = pre["stage_frames"]
+        vis    = [i for i in sf if i <= fi]
+        if vis:
+            arts["stage_markers"].set_offsets(
+                np.c_[pre["rx"][vis], pre["ry"][vis]])
+        else:
+            arts["stage_markers"].set_offsets(np.empty((0, 2)))
+
         # ---- Statistics panel ------------------------------------------------
         _update_stats(arts["stats"], pre, fi, rth)
 
@@ -498,6 +549,8 @@ def _update_stats(texts, pre, fi, rth):
     _fmt("Max |ω|",       f"{float(np.abs(w_sl).max()):.3f} rad/s")
     _fmt("Avg |CTE|",     f"{float(cte_sl.mean()):.4f} m")
     _fmt("Max |CTE|",     f"{float(cte_sl.max()):.4f} m")
+    stage_num = int(pre["stage"][fi])
+    _fmt("Stage",        str(stage_num))
     _fmt("Solver fails",  str(n_fails))
 
 
@@ -632,8 +685,12 @@ def main():
     ap.add_argument("--scenario", type=int, help="C++ scenario ID")
     ap.add_argument("--path",     type=str, help="Custom path file")
     ap.add_argument("--config",   type=str, help="MPC params config file (.cfg)")
-    ap.add_argument("--noisy",    action="store_true", help="Enable sensor noise")
-    ap.add_argument("--prune",    action="store_true", help="Enable path pruning")
+    ap.add_argument("--noisy",      action="store_true", help="Enable sensor noise")
+    ap.add_argument("--prune",      action="store_true", help="Enable path pruning")
+    ap.add_argument("--random",     action="store_true", help="Random staged mode")
+    ap.add_argument("--complexity", type=int, default=2, help="Path complexity 1-5 (random mode)")
+    ap.add_argument("--stages",     type=int, default=5, help="Number of random stages")
+    ap.add_argument("--seed",       type=int, default=None, help="RNG seed for reproducibility")
     ap.add_argument("--draw",     action="store_true", help="Draw path interactively")
     ap.add_argument("--fps",      type=int, default=20)
     ap.add_argument("--save",     help="Save animation to file (MP4 or GIF)")
@@ -695,6 +752,23 @@ def main():
                     facecolor=C["bg_ax"], edgecolor=C["spine"], labelcolor=C["tick"])
 
     arts = init_artists(ax_xy, ax_v, ax_w, ax_cte, ax_con, ax_solve, ax_stats, params)
+
+    # Draw static stage-boundary vertical lines on every time-series panel.
+    # These are added once (not animated) so they sit underneath the live data.
+    ts_axes = (ax_v, ax_w, ax_cte, ax_con, ax_solve)
+    for si, fi in enumerate(pre["stage_frames"]):
+        if fi == 0:
+            continue   # don't mark the very start
+        t_trans = float(pre["t"][fi])
+        for ax in ts_axes:
+            ax.axvline(t_trans, color=C["stage_line"], linewidth=0.9,
+                       linestyle="--", alpha=0.6, zorder=0)
+        # Label on the XY plot at the robot position at transition
+        lbl = ax_xy.text(
+            float(pre["rx"][fi]), float(pre["ry"][fi]),
+            f" S{si + 1}", color=C["stage_marker"], fontsize=7,
+            va="bottom", ha="left", zorder=11)
+        arts["stage_labels"].append(lbl)
 
     if args.save:
         update_fn = make_update(frames, arts, params, pre)

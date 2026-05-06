@@ -253,6 +253,85 @@ Path loadPathFromFile(const std::string& filepath)
     return p;
 }
 
+Path makeRandomPath(
+    double start_x,
+    double start_y,
+    double start_theta,
+    int complexity,
+    std::mt19937& rng)
+{
+    // Clamp complexity to [1, 5]
+    complexity = std::max(1, std::min(5, complexity));
+ 
+    // --- Generation parameters derived from complexity -------------------
+    //
+    //   n_segments  : number of segments in the path
+    //   seg_len     : nominal arc length per segment [m]
+    //   len_jitter  : fractional ± variation in segment length
+    //   pts_per_seg : sample points per segment — kept low deliberately so
+    //                 each step is large and the geometry is coarse/granular
+    //   max_turn    : maximum smooth heading drift spread across a segment [rad]
+    //   kink_max    : maximum instantaneous heading jump applied at each
+    //                 segment boundary — this is what makes transitions
+    //                 volatile; the robot sees a sudden direction change
+    //                 rather than a gradual curve
+    //
+    //   complexity 1  →  4 segs × 2.8 m,  ±0.30 rad drift,  ±0.40 rad kink
+    //   complexity 3  →  8 segs × 4.4 m,  ±0.46 rad drift,  ±0.70 rad kink
+    //   complexity 5  → 12 segs × 6.0 m,  ±0.62 rad drift,  ±1.00 rad kink
+    const int    n_segments  = 2 + complexity * 2;           // 4 … 12
+    const double seg_len     = 0.2 + complexity * 0.2;       // 2.8 … 6.0 m
+    const double max_turn    = 0.14 + complexity * 0.096;    // 0.24 … 0.62 rad/seg
+    const double kink_max    = 0.25 + complexity * 0.25;     // 0.40 … 1.00 rad
+    const double len_jitter  = 0.60;
+    const int    pts_per_seg = 3;   // coarse — large discrete steps
+ 
+    std::uniform_real_distribution<double> turn_dist(-max_turn,  max_turn);
+    std::uniform_real_distribution<double> kink_dist(-kink_max,  kink_max);
+    std::uniform_real_distribution<double> len_dist(
+        seg_len * (1.0 - len_jitter),
+        seg_len * (1.0 + len_jitter));
+ 
+    // --- Single-pass sweep with boundary kinks --------------------------
+    // Within each segment the heading rotates gradually (d_heading per
+    // step), giving a gentle curve.  At every segment boundary a separate
+    // kink angle is applied as a single instantaneous heading jump before
+    // the next segment begins, producing the volatile transitions the MPC
+    // must react to.
+    Path path;
+    path.pts.reserve(n_segments * pts_per_seg + 1);
+    path.pts.push_back({Eigen::Vector2d(start_x, start_y)});
+ 
+    double cx      = start_x;
+    double cy      = start_y;
+    double heading = start_theta;
+ 
+    for (int s = 0; s < n_segments; ++s)
+    {
+        // Sharp heading kink at the segment boundary (skip on first segment
+        // so the path starts aligned with the robot's initial heading).
+        if (s > 0)
+        {
+            heading += kink_dist(rng);
+        }
+ 
+        const double total_len  = len_dist(rng);
+        const double total_turn = turn_dist(rng);
+        const double d_step     = total_len  / pts_per_seg;
+        const double d_heading  = total_turn / pts_per_seg;
+ 
+        for (int k = 0; k < pts_per_seg; ++k)
+        {
+            heading += d_heading;
+            cx      += d_step * std::cos(heading);
+            cy      += d_step * std::sin(heading);
+            path.pts.push_back({Eigen::Vector2d(cx, cy)});
+        }
+    }
+ 
+    return path;
+}
+
 // State noise
 
 StateNoise::StateNoise(const StateNoiseParams& params, unsigned int seed) :

@@ -1,0 +1,1 @@
+python3 ./tools/plot_sim.py --binary ./build/dd_mpc/sim_test --config ./config/mpc_default.cfg "$@"

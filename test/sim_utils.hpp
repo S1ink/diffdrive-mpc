@@ -60,6 +60,24 @@ Path makeFigure8Path(int n = 100, double scale = 3.0);
 // Load a whitespace-delimited "x y" text file as a Path.
 Path loadPathFromFile(const std::string& filepath);
 
+// Generate a random driveable path starting from (start_x, start_y) in
+// direction start_theta.
+//
+// @param complexity  1-5.  Controls the number of segments, their length, and
+//                    the maximum per-segment heading change:
+//                      1 - 4 gentle segments, small turns
+//                      5 - 12 longer segments, sharper turns
+// @param rng         Caller-owned RNG so the sequence is reproducible.
+//
+// The path is densely sampled (20 pts / segment) and is guaranteed to be
+// forward-only (no reversals), making it always trackable by the MPC.
+Path makeRandomPath(
+    double start_x,
+    double start_y,
+    double start_theta,
+    int complexity,
+    std::mt19937& rng);
+
 
 // State noise
 
